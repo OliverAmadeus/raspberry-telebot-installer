@@ -4,6 +4,9 @@ Description=Raspberry Telebot - Telegram Remote Terminal
 Wants=network-online.target
 After=network-online.target
 
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 
@@ -22,9 +25,6 @@ ExecStart=/opt/raspberry-telebot-installer/venv/bin/python /opt/raspberry-telebo
 
 Restart=on-failure
 RestartSec=10
-
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 NoNewPrivileges=true
 PrivateTmp=true
