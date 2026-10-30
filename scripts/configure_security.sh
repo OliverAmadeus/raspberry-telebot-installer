@@ -8,6 +8,7 @@ set -Eeuo pipefail
 
 APP_USER="raspberry-telebot"
 APP_GROUP="raspberry-telebot"
+APP_SHELL="/usr/sbin/nologin"
 
 CONFIG_DIR="/etc/raspberry-telebot-installer"
 CONFIG_FILE="${CONFIG_DIR}/bot.env"
@@ -23,7 +24,7 @@ UPTERM_SERVER="wss://uptermd.upterm.dev"
 
 UPTERM_KNOWN_HOSTS='
 @cert-authority uptermd.upterm.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
-@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
+@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvPFWkh4
 '
 
 # ==========================================
@@ -59,10 +60,10 @@ echo " CONFIGURANDO SEGURIDAD"
 echo "=========================================="
 
 # ==========================================
-# VALIDAR RUTAS
+# VALIDAR RUTAS EXISTENTES
 # ==========================================
 
-for directory in "$CONFIG_DIR" "$STATE_DIR"; do
+for directory in "$CONFIG_DIR" "$STATE_DIR" "$SSH_DIR"; do
     if [[ -L "$directory" ]]; then
         echo "ERROR: no se permiten enlaces simbólicos: $directory"
         exit 1
@@ -87,12 +88,30 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
         --gid "$APP_GROUP" \
         --home-dir "$STATE_DIR" \
         --no-create-home \
-        --shell /usr/sbin/nologin \
+        --shell "$APP_SHELL" \
         "$APP_USER"
 fi
 
+# ==========================================
+# VALIDAR USUARIO EXISTENTE
+# ==========================================
+
 if [[ "$(id -gn "$APP_USER")" != "$APP_GROUP" ]]; then
     echo "ERROR: el grupo principal del usuario es incorrecto."
+    exit 1
+fi
+
+PASSWD_ENTRY="$(getent passwd "$APP_USER")"
+
+IFS=: read -r _ _ _ _ _ USER_HOME USER_SHELL <<< "$PASSWD_ENTRY"
+
+if [[ "$USER_HOME" != "$STATE_DIR" ]]; then
+    echo "ERROR: el directorio personal del usuario es incorrecto."
+    exit 1
+fi
+
+if [[ "$USER_SHELL" != "$APP_SHELL" ]]; then
+    echo "ERROR: el shell del usuario no es el esperado."
     exit 1
 fi
 
@@ -100,13 +119,23 @@ fi
 # CREAR DIRECTORIOS
 # ==========================================
 
-install -d -o root -g "$APP_GROUP" -m 0750 "$CONFIG_DIR"
+install -d \
+    -o root \
+    -g "$APP_GROUP" \
+    -m 0750 \
+    "$CONFIG_DIR"
 
 install -d \
     -o "$APP_USER" \
     -g "$APP_GROUP" \
     -m 0750 \
     "$STATE_DIR"
+
+# Validar nuevamente antes de utilizar SSH_DIR.
+if [[ -L "$SSH_DIR" ]]; then
+    echo "ERROR: SSH_DIR no puede ser un enlace simbólico."
+    exit 1
+fi
 
 install -d \
     -o "$APP_USER" \
@@ -115,7 +144,7 @@ install -d \
     "$SSH_DIR"
 
 # ==========================================
-# VALIDAR CONFIGURACION EXISTENTE
+# VALIDAR ARCHIVO DE CONFIGURACION
 # ==========================================
 
 if [[ -L "$CONFIG_FILE" ]]; then
@@ -161,8 +190,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
         exit 1
     fi
 
-    # Permitir las antiguas variables GitHub solamente
-    # para poder eliminarlas durante esta actualización.
+    # Permitir las antiguas variables GitHub únicamente
+    # para eliminarlas durante esta actualización.
     if grep -Ev \
         '^(TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+|TELEGRAM_AUTHORIZED_USER_ID=[0-9]+|UPTERM_SERVER=wss://uptermd\.upterm\.dev|UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+|UPTERM_AUTHORIZED_USER_2=github:[A-Za-z0-9-]+|[[:space:]]*|[[:space:]]*#.*)$' \
         "$CONFIG_FILE" >/dev/null; then
@@ -233,6 +262,11 @@ TEMP_CONFIG=""
 
 echo
 echo "Configurando confianza SSH de Upterm..."
+
+if [[ -L "$SSH_DIR" ]]; then
+    echo "ERROR: SSH_DIR no puede ser un enlace simbólico."
+    exit 1
+fi
 
 if [[ -L "$KNOWN_HOSTS" ]]; then
     echo "ERROR: known_hosts no puede ser un enlace simbólico."
