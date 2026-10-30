@@ -5,6 +5,10 @@ import sys
 from pathlib import Path
 
 
+# ==========================================
+# CONFIGURACIÓN
+# ==========================================
+
 UPTERM_SERVER = os.getenv(
     "UPTERM_SERVER",
     "wss://uptermd.upterm.dev"
@@ -15,6 +19,10 @@ UPTERM_AUTHORIZED_USER = os.getenv(
     "github:KaworuSSSS"
 ).strip()
 
+
+# ==========================================
+# LOCALIZAR UPT​ERM
+# ==========================================
 
 def find_upterm():
     """Localiza el ejecutable de Upterm."""
@@ -31,22 +39,47 @@ def find_upterm():
     ]
 
     for path in possible_paths:
-        if path.is_file():
+        if path.is_file() and os.access(path, os.X_OK):
             return str(path)
 
     raise FileNotFoundError(
-        "No se encontró Upterm. Ejecuta primero el instalador."
+        "No se encontró Upterm. "
+        "Ejecuta primero el instalador."
     )
 
 
-def main():
+# ==========================================
+# VALIDAR CONFIGURACIÓN
+# ==========================================
+
+def validate_configuration():
+
     if not UPTERM_SERVER.startswith("wss://"):
-        raise ValueError("El servidor Upterm debe utilizar WSS.")
+        raise ValueError(
+            "El servidor debe utilizar una conexión WSS."
+        )
 
     if not UPTERM_AUTHORIZED_USER.startswith("github:"):
         raise ValueError(
-            "UPTERM_AUTHORIZED_USER debe indicar una cuenta GitHub."
+            "UPTERM_AUTHORIZED_USER debe tener "
+            "el formato github:usuario."
         )
+
+    username = UPTERM_AUTHORIZED_USER.split(":", 1)[1]
+
+    if not username or "/" in username:
+        raise ValueError(
+            "La cuenta GitHub configurada no es válida."
+        )
+
+
+# ==========================================
+# INICIAR UPT​ERM
+# ==========================================
+
+def main():
+
+    validate_configuration()
 
     executable = find_upterm()
 
@@ -58,21 +91,41 @@ def main():
         "--authorized-user",
         UPTERM_AUTHORIZED_USER,
         "--accept",
+        "--no-sftp",
         "--",
         "/bin/bash",
         "-l",
     ]
 
-    print("Iniciando terminal remota Upterm...")
+    print("======================================")
+    print(" RASPBERRY TELEBOT - UPT​ERM")
+    print("======================================")
+
+    print(f"Ejecutable: {executable}")
     print(f"Servidor: {UPTERM_SERVER}")
-    print(f"Acceso autorizado: {UPTERM_AUTHORIZED_USER}")
+    print(f"Usuario autorizado: {UPTERM_AUTHORIZED_USER}")
+    print("Transferencia SFTP: desactivada")
+    print("Acceso interactivo: habilitado")
+    print("Iniciando sesión remota...")
 
     os.execv(executable, command)
 
 
+# ==========================================
+# EJECUCIÓN
+# ==========================================
+
 if __name__ == "__main__":
+
     try:
         main()
+
+    except KeyboardInterrupt:
+        print("\nUpterm detenido.")
+
     except Exception as error:
-        print(f"ERROR UPTERM: {error}", file=sys.stderr)
+        print(
+            f"ERROR UPT​ERM: {error}",
+            file=sys.stderr
+        )
         sys.exit(1)
