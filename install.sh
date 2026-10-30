@@ -24,10 +24,20 @@ SERVICES=(
 
 error_handler() {
     local exit_code=$?
+
     echo
-    echo "ERROR: la instalación terminó inesperadamente."
+    echo "=========================================="
+    echo " ERROR DURANTE LA INSTALACION"
+    echo "=========================================="
+
     echo "Código de salida: $exit_code"
-    echo "Revisa los registros de instalación y systemd."
+    echo "La instalación no puede considerarse completa."
+
+    echo
+    echo "Revisa los registros con:"
+    echo "journalctl -u telegram-bot.service -n 50 --no-pager"
+    echo "journalctl -u upterm.service -n 50 --no-pager"
+
     exit "$exit_code"
 }
 
@@ -47,7 +57,10 @@ fi
 # LOCALIZAR REPOSITORIO
 # ==========================================
 
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="$(
+    cd "$(dirname "${BASH_SOURCE[0]}")" &&
+    pwd
+)"
 
 echo "=========================================="
 echo " RASPBERRY TELEBOT INSTALLER"
@@ -72,32 +85,89 @@ REQUIRED_FILES=(
 )
 
 for file in "${REQUIRED_FILES[@]}"; do
+
     if [[ ! -f "$SOURCE_DIR/$file" ]]; then
         echo "ERROR: falta el archivo $file"
         exit 1
     fi
+
 done
 
 # ==========================================
 # COMPROBAR SISTEMA
 # ==========================================
 
-for command in apt-get dpkg systemctl realpath install cp; do
+REQUIRED_COMMANDS=(
+    apt-get
+    dpkg
+    systemctl
+    systemd-analyze
+    realpath
+    install
+    cp
+    python3
+    bash
+)
+
+for command in "${REQUIRED_COMMANDS[@]}"; do
+
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "ERROR: no se encontró el comando $command."
         exit 1
     fi
+
 done
+
+# ==========================================
+# VALIDAR SISTEMA OPERATIVO
+# ==========================================
+
+if [[ ! -f /etc/os-release ]]; then
+    echo "ERROR: no se pudo identificar el sistema operativo."
+    exit 1
+fi
+
+source /etc/os-release
+
+OS_ID="${ID:-}"
+OS_LIKE="${ID_LIKE:-}"
+
+if [[ "$OS_ID" != "ubuntu" &&
+      "$OS_ID" != "debian" &&
+      "$OS_LIKE" != *debian* ]]; then
+
+    echo "ERROR: sistema operativo no compatible."
+    echo "Sistema detectado: ${PRETTY_NAME:-desconocido}"
+    exit 1
+
+fi
+
+echo "Sistema operativo: ${PRETTY_NAME:-desconocido}"
+
+# ==========================================
+# DETECTAR ARQUITECTURA
+# ==========================================
 
 ARCH="$(dpkg --print-architecture)"
 
 if [[ "$ARCH" != "arm64" && "$ARCH" != "amd64" ]]; then
+
     echo "ERROR: arquitectura no compatible: $ARCH"
     exit 1
+
 fi
 
+echo "Arquitectura: $ARCH"
+
+# ==========================================
+# COMPROBAR SYSTEMD
+# ==========================================
+
 if ! systemctl is-system-running >/dev/null 2>&1; then
+
     echo "AVISO: systemd no informa un estado completamente operativo."
+    echo "Se continuará, pero la activación de servicios podría fallar."
+
 fi
 
 # ==========================================
@@ -116,10 +186,17 @@ bash "$SOURCE_DIR/scripts/install_dependencies.sh"
 echo
 echo "[2/7] Instalando archivos del proyecto..."
 
+if [[ -L "$APP_DIR" ]]; then
+    echo "ERROR: el directorio de instalación no puede ser un enlace simbólico."
+    exit 1
+fi
+
 install -d -m 0755 "$APP_DIR"
 
 if [[ "$(realpath "$SOURCE_DIR")" != "$(realpath "$APP_DIR")" ]]; then
+
     cp -a "$SOURCE_DIR/." "$APP_DIR/"
+
 fi
 
 chown -R root:root "$APP_DIR"
@@ -132,7 +209,14 @@ echo
 echo "[3/7] Preparando entorno Python..."
 
 if [[ ! -d "$APP_DIR/venv" ]]; then
+
     python3 -m venv "$APP_DIR/venv"
+
+fi
+
+if [[ ! -x "$APP_DIR/venv/bin/python" ]]; then
+    echo "ERROR: el entorno virtual de Python no es válido."
+    exit 1
 fi
 
 "$APP_DIR/venv/bin/python" -m pip install --upgrade pip
@@ -157,9 +241,16 @@ echo
 echo "[5/7] Instalando servicios..."
 
 for service in "${SERVICES[@]}"; do
+
+    if [[ ! -s "$APP_DIR/systemd/$service" ]]; then
+        echo "ERROR: servicio vacío: $service"
+        exit 1
+    fi
+
     install -m 0644 \
         "$APP_DIR/systemd/$service" \
         "/etc/systemd/system/$service"
+
 done
 
 systemctl daemon-reload
@@ -185,8 +276,11 @@ echo
 echo "[6/7] Habilitando inicio automático..."
 
 for service in "${SERVICES[@]}"; do
+
     systemctl enable "$service"
+
     systemctl reset-failed "$service" || true
+
 done
 
 # ==========================================
@@ -201,17 +295,55 @@ for service in "${SERVICES[@]}"; do
     echo
     echo "Iniciando $service..."
 
-    systemctl restart "$service" 2>/dev/null || \
+    if systemctl is-active --quiet "$service"; then
+
+        systemctl restart "$service"
+
+    else
+
         systemctl start "$service"
 
+    fi
+
+    # Dar tiempo al proceso para iniciar.
+
+    sleep 3
+
+    # Verificar estado.
+
     if ! systemctl is-active --quiet "$service"; then
+
         echo "ERROR: $service no está activo."
+
         systemctl --no-pager --full status "$service" || true
+
         journalctl -u "$service" -n 40 --no-pager || true
+
         exit 1
+
+    fi
+
+    # Verificar que exista un proceso principal.
+
+    MAIN_PID="$(
+        systemctl show \
+            --property=MainPID \
+            --value \
+            "$service"
+    )"
+
+    if [[ ! "$MAIN_PID" =~ ^[1-9][0-9]*$ ]]; then
+
+        echo "ERROR: $service no tiene un proceso principal activo."
+
+        journalctl -u "$service" -n 40 --no-pager || true
+
+        exit 1
+
     fi
 
     echo "$service: ACTIVO"
+    echo "PID principal: $MAIN_PID"
 
 done
 
@@ -237,6 +369,7 @@ systemctl --no-pager --full status "$SERVICE_UPTERM"
 echo
 echo "Directorio: $APP_DIR"
 echo "Configuración: $CONFIG_DIR/bot.env"
+echo "Claves de confianza: $CONFIG_DIR/upterm_known_hosts"
 
 echo
 echo "Registros:"
