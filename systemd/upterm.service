@@ -3,22 +3,26 @@
 Description=Raspberry Telebot - Upterm Remote Terminal
 Wants=network-online.target
 After=network-online.target
-Requires=network-online.target
 
 [Service]
 Type=simple
+
 User=raspberry-telebot
 Group=raspberry-telebot
 
 WorkingDirectory=/opt/raspberry-telebot-installer/bot
+
 Environment=HOME=/var/lib/raspberry-telebot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
+
 EnvironmentFile=/etc/raspberry-telebot-installer/bot.env
 
 ExecStart=/opt/raspberry-telebot-installer/venv/bin/python /opt/raspberry-telebot-installer/bot/upterm.py
 
-Restart=on-failure
+Restart=always
 RestartSec=15
+
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -28,9 +32,12 @@ ProtectSystem=full
 ProtectHome=true
 RestrictSUIDSGID=true
 LockPersonality=true
+UMask=0077
 
 StateDirectory=raspberry-telebot
 StateDirectoryMode=0750
+
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target
