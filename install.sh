@@ -67,10 +67,20 @@ if ! command -v apt-get >/dev/null 2>&1; then
     exit 1
 fi
 
+if ! command -v dpkg >/dev/null 2>&1; then
+    echo "ERROR: no se encontró dpkg."
+    exit 1
+fi
+
 ARCH="$(dpkg --print-architecture)"
 
 if [[ "$ARCH" != "arm64" && "$ARCH" != "amd64" ]]; then
     echo "ERROR: arquitectura no compatible: $ARCH"
+    exit 1
+fi
+
+if ! command -v systemctl >/dev/null 2>&1; then
+    echo "ERROR: systemd no está disponible."
     exit 1
 fi
 
@@ -141,6 +151,25 @@ install -m 0644 \
 systemctl daemon-reload
 
 # ==========================================
+# VALIDAR SERVICIOS
+# ==========================================
+
+echo
+echo "Validando configuración de systemd..."
+
+if ! systemd-analyze verify \
+    "/etc/systemd/system/$SERVICE_TELEGRAM" \
+    "/etc/systemd/system/$SERVICE_UPTERM"; then
+
+    echo
+    echo "ERROR: systemd detectó problemas."
+    echo "No se iniciarán los servicios."
+    exit 1
+fi
+
+echo "Configuración de systemd válida."
+
+# ==========================================
 # HABILITAR INICIO AUTOMATICO
 # ==========================================
 
@@ -151,13 +180,15 @@ systemctl enable "$SERVICE_TELEGRAM"
 systemctl enable "$SERVICE_UPTERM"
 
 # ==========================================
-# INICIAR O REINICIAR SERVICIOS
+# INICIAR SERVICIOS
 # ==========================================
 
 echo
 echo "[7/7] Iniciando servicios..."
 
 for service in "$SERVICE_TELEGRAM" "$SERVICE_UPTERM"; do
+
+    systemctl reset-failed "$service" || true
 
     if systemctl is-active --quiet "$service"; then
         systemctl restart "$service"
