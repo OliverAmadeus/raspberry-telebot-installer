@@ -13,7 +13,8 @@ from pathlib import Path
 HOME_DIR = str(Path.home())
 
 COMMAND_TIMEOUT = 120
-MAX_OUTPUT_SIZE = 1024 * 1024  # 1 MiB por comando
+MAX_OUTPUT_SIZE = 1024 * 1024  # 1 MiB por canal
+READ_CHUNK_SIZE = 65536
 
 # Directorio independiente por usuario Telegram
 working_directories = {}
@@ -38,7 +39,11 @@ def change_directory(user_id, command):
         if len(arguments) > 2:
             return "Uso: cd [directorio]"
 
-        destination = arguments[1] if len(arguments) == 2 else HOME_DIR
+        destination = (
+            arguments[1]
+            if len(arguments) == 2
+            else HOME_DIR
+        )
 
         current_dir = get_working_directory(user_id)
 
@@ -60,14 +65,94 @@ def change_directory(user_id, command):
         destination = os.path.abspath(destination)
 
         if not os.path.isdir(destination):
-            return f"No existe el directorio:\n{destination}"
+            return (
+                "No existe el directorio:\n"
+                f"{destination}"
+            )
 
         working_directories[user_id] = destination
 
-        return f"Directorio cambiado a:\n{destination}"
+        return (
+            "Directorio cambiado a:\n"
+            f"{destination}"
+        )
 
     except ValueError:
         return "Error: formato de directorio no válido."
+
+
+# ==========================================
+# TERMINAR GRUPO DE PROCESOS
+# ==========================================
+
+async def terminate_process_group(process):
+
+    if process.returncode is not None:
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+
+    except ProcessLookupError:
+        pass
+
+    try:
+        await asyncio.wait_for(
+            process.wait(),
+            timeout=5
+        )
+
+    except asyncio.TimeoutError:
+
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+
+        except ProcessLookupError:
+            pass
+
+        await process.wait()
+
+
+# ==========================================
+# LEER SALIDA CON LIMITE DE MEMORIA
+# ==========================================
+
+async def read_limited(stream, exceeded_event, process):
+
+    collected = bytearray()
+
+    while True:
+
+        chunk = await stream.read(READ_CHUNK_SIZE)
+
+        if not chunk:
+            break
+
+        remaining = MAX_OUTPUT_SIZE + 1 - len(collected)
+
+        if remaining > 0:
+            collected.extend(chunk[:remaining])
+
+        if len(collected) > MAX_OUTPUT_SIZE:
+
+            if not exceeded_event.is_set():
+
+                exceeded_event.set()
+
+                try:
+                    os.killpg(
+                        process.pid,
+                        signal.SIGTERM
+                    )
+
+                except ProcessLookupError:
+                    pass
+
+            break
+
+    exceeded = len(collected) > MAX_OUTPUT_SIZE
+
+    return bytes(collected[:MAX_OUTPUT_SIZE]), exceeded
 
 
 # ==========================================
@@ -82,7 +167,7 @@ async def execute_command(user_id, command):
     - Comandos arbitrarios.
     - Directorio persistente por usuario.
     - Tiempo máximo de ejecución.
-    - Límite de salida.
+    - Lectura limitada de stdout y stderr.
     - Terminación del grupo de procesos.
     """
 
@@ -91,18 +176,24 @@ async def execute_command(user_id, command):
     if not command:
         return "No se recibió ningún comando."
 
-    current_dir = get_working_directory(user_id)
-
     # ======================================
     # PROCESAR CD
     # ======================================
 
-    if command == "cd" or command.startswith("cd "):
+    try:
+        parsed_command = shlex.split(command)
+
+    except ValueError:
+        parsed_command = []
+
+    if parsed_command and parsed_command[0] == "cd":
         return change_directory(user_id, command)
 
     # ======================================
     # VALIDAR DIRECTORIO
     # ======================================
+
+    current_dir = get_working_directory(user_id)
 
     if not os.path.isdir(current_dir):
         current_dir = HOME_DIR
@@ -113,6 +204,7 @@ async def execute_command(user_id, command):
     # ======================================
 
     try:
+
         process = await asyncio.create_subprocess_exec(
             "/bin/bash",
             "-lc",
@@ -127,54 +219,69 @@ async def execute_command(user_id, command):
         return f"No se pudo iniciar el comando: {error}"
 
     # ======================================
-    # CONTROLAR TIEMPO Y SALIDA
+    # LEER SALIDAS SIMULTANEAMENTE
     # ======================================
 
+    exceeded_event = asyncio.Event()
+
+    stdout_task = asyncio.create_task(
+        read_limited(
+            process.stdout,
+            exceeded_event,
+            process
+        )
+    )
+
+    stderr_task = asyncio.create_task(
+        read_limited(
+            process.stderr,
+            exceeded_event,
+            process
+        )
+    )
+
+    gather_task = asyncio.gather(
+        stdout_task,
+        stderr_task,
+        process.wait()
+    )
+
+    # ======================================
+    # CONTROLAR TIEMPO DE EJECUCION
+    # ======================================
+
+    timed_out = False
+
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
+
+        await asyncio.wait_for(
+            asyncio.shield(gather_task),
             timeout=COMMAND_TIMEOUT
         )
 
     except asyncio.TimeoutError:
 
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
+        timed_out = True
 
-            await asyncio.wait_for(
-                process.wait(),
-                timeout=5
-            )
+        await terminate_process_group(process)
 
-        except asyncio.TimeoutError:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        await gather_task
 
-            await process.wait()
+    except Exception:
 
-        except ProcessLookupError:
-            pass
+        await terminate_process_group(process)
 
-        return (
-            f"El comando superó el límite de "
-            f"{COMMAND_TIMEOUT} segundos."
-        )
+        if not gather_task.done():
+            await gather_task
+
+        raise
 
     # ======================================
-    # CONTROLAR TAMAÑO DE SALIDA
+    # RECUPERAR RESULTADOS
     # ======================================
 
-    truncated = False
-
-    if len(stdout) > MAX_OUTPUT_SIZE:
-        stdout = stdout[:MAX_OUTPUT_SIZE]
-        truncated = True
-
-    if len(stderr) > MAX_OUTPUT_SIZE:
-        stderr = stderr[:MAX_OUTPUT_SIZE]
-        truncated = True
+    stdout, stdout_exceeded = stdout_task.result()
+    stderr, stderr_exceeded = stderr_task.result()
 
     # ======================================
     # PREPARAR RESULTADO
@@ -188,15 +295,24 @@ async def execute_command(user_id, command):
     if errors:
         result += ("\n" if result else "") + errors
 
-    if truncated:
+    if timed_out:
+
         result += (
-            "\n\n[Salida truncada: se alcanzó el límite "
-            "de 1 MiB por canal.]"
+            "\n\n[Comando terminado por superar "
+            f"el límite de {COMMAND_TIMEOUT} segundos.]"
+        )
+
+    if stdout_exceeded or stderr_exceeded:
+
+        result += (
+            "\n\n[Proceso terminado: se alcanzó "
+            "el límite de salida de 1 MiB por canal.]"
         )
 
     if not result:
+
         result = (
-            f"Comando finalizado. "
+            "Comando finalizado. "
             f"Código de salida: {process.returncode}"
         )
 
