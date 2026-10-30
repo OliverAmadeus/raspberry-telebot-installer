@@ -45,10 +45,10 @@ case "$ARCH" in
         ;;
 esac
 
-echo "Arquitectura detectada: $ARCH"
+echo "Arquitectura: $ARCH"
 
 # ==========================================
-# OBTENER ULTIMA VERSION OFICIAL
+# DESCARGAR UPT​ERM CLI OFICIAL
 # ==========================================
 
 TMP_DIR="$(mktemp -d)"
@@ -89,15 +89,15 @@ assets = {
     for item in release["assets"]
 }
 
-archive_name = f"uptermd_linux_{arch}.tar.gz"
+archive_name = f"upterm_linux_{arch}.tar.gz"
 
 if archive_name not in assets:
     raise SystemExit(
-        f"No existe el paquete oficial {archive_name}"
+        f"No se encontró el paquete oficial: {archive_name}"
     )
 
 if "checksums.txt" not in assets:
-    raise SystemExit("No existe checksums.txt en la versión.")
+    raise SystemExit("No se encontró checksums.txt.")
 
 archive = directory / archive_name
 checksums = directory / "checksums.txt"
@@ -132,50 +132,50 @@ actual = hashlib.sha256(
 ).hexdigest()
 
 if actual.lower() != expected.lower():
-    raise SystemExit("ERROR: SHA256 incorrecto.")
+    raise SystemExit("ERROR: la verificación SHA256 falló.")
 
-print(f"Versión oficial: {release['tag_name']}")
+print(f"Versión: {release['tag_name']}")
 print("SHA256 verificado correctamente.")
-print(f"Paquete: {archive_name}")
 PY
 
 # ==========================================
-# EXTRAER E INSTALAR UPT​ERMD
+# EXTRAER E INSTALAR UPT​ERM
 # ==========================================
 
 echo
-echo "Instalando Upterm..."
+echo "Instalando Upterm CLI..."
 
 tar -xzf \
-    "$TMP_DIR/uptermd_linux_${UPTERM_ARCH}.tar.gz" \
+    "$TMP_DIR/upterm_linux_${UPTERM_ARCH}.tar.gz" \
     -C "$TMP_DIR"
 
 UPTERM_BIN="$(
     find "$TMP_DIR" \
         -type f \
-        -name uptermd \
+        -name upterm \
         -print \
         -quit
 )"
 
 if [[ -z "$UPTERM_BIN" ]]; then
-    echo "ERROR: no se encontró el ejecutable uptermd."
+    echo "ERROR: no se encontró el ejecutable upterm."
     exit 1
 fi
 
-install -m 0755 "$UPTERM_BIN" /usr/local/bin/uptermd
+install -m 0755 "$UPTERM_BIN" /usr/local/bin/upterm
 
 # ==========================================
-# VERIFICACION
+# VERIFICAR INSTALACION
 # ==========================================
 
 echo
 echo "======================================"
-echo " VERIFICANDO INSTALACION"
+echo " VERIFICACION"
 echo "======================================"
 
-/usr/local/bin/uptermd version
+/usr/local/bin/upterm version
 
 echo
-echo "Upterm instalado correctamente."
-echo "Ejecutable: /usr/local/bin/uptermd"
+echo "Upterm CLI instalado correctamente."
+echo "Ejecutable: /usr/local/bin/upterm"
+echo "Relay: wss://uptermd.upterm.dev"
