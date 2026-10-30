@@ -16,6 +16,14 @@ SERVICE_UPTERM="upterm.service"
 
 SYSTEMD_DIR="/etc/systemd/system"
 
+# Carpetas administradas por el repositorio.
+SYNC_DIRS=(
+    "bot"
+    "systemd"
+    "config"
+    "scripts"
+)
+
 # ==========================================
 # MANEJO DE ERRORES
 # ==========================================
@@ -86,6 +94,15 @@ for file in "${REQUIRED_FILES[@]}"; do
 
     if [[ ! -f "$SOURCE_DIR/$file" ]]; then
         echo "ERROR: falta el archivo $file"
+        exit 1
+    fi
+
+done
+
+for directory in "${SYNC_DIRS[@]}"; do
+
+    if [[ ! -d "$SOURCE_DIR/$directory" ]]; then
+        echo "ERROR: falta el directorio $directory"
         exit 1
     fi
 
@@ -179,39 +196,79 @@ echo "[1/7] Instalando dependencias..."
 
 bash "$SOURCE_DIR/scripts/install_dependencies.sh"
 
+if ! command -v rsync >/dev/null 2>&1; then
+    echo "ERROR: rsync no está disponible."
+    echo "Debe instalarse mediante install_dependencies.sh."
+    exit 1
+fi
+
 # ==========================================
-# COPIAR PROYECTO
+# VALIDAR DESTINO
 # ==========================================
 
 echo
-echo "[2/7] Instalando archivos del proyecto..."
+echo "[2/7] Preparando directorio de instalación..."
 
 if [[ -L "$APP_DIR" ]]; then
     echo "ERROR: el directorio de instalación no puede ser un enlace simbólico."
     exit 1
 fi
 
-install -d -m 0755 "$APP_DIR"
+install -d -o root -g root -m 0755 "$APP_DIR"
+
+if [[ ! -d "$APP_DIR" ]]; then
+    echo "ERROR: no se pudo preparar el directorio de instalación."
+    exit 1
+fi
+
+# ==========================================
+# SINCRONIZAR PROYECTO
+# ==========================================
+
+echo
+echo "Sincronizando archivos con el repositorio..."
 
 if [[ "$(realpath "$SOURCE_DIR")" != "$(realpath "$APP_DIR")" ]]; then
 
-    ITEMS_TO_COPY=(
-        "README.md"
-        "install.sh"
-        "requirements.txt"
-        "bot"
-        "systemd"
-        "config"
-        "scripts"
-    )
+    for directory in "${SYNC_DIRS[@]}"; do
 
-    for item in "${ITEMS_TO_COPY[@]}"; do
+        TARGET_DIR="$APP_DIR/$directory"
 
-        if [[ -e "$SOURCE_DIR/$item" ]]; then
-            cp -a "$SOURCE_DIR/$item" "$APP_DIR/"
+        if [[ -L "$TARGET_DIR" ]]; then
+            echo "ERROR: destino no permitido: $TARGET_DIR"
+            exit 1
         fi
 
+        install -d -o root -g root -m 0755 "$TARGET_DIR"
+
+        echo "Sincronizando: $directory"
+
+        rsync -a \
+            --delete \
+            --exclude="bot.env" \
+            --exclude="*.local" \
+            "$SOURCE_DIR/$directory/" \
+            "$TARGET_DIR/"
+
     done
+
+    # Sincronizar archivos principales.
+    install -o root -g root -m 0644 \
+        "$SOURCE_DIR/README.md" \
+        "$APP_DIR/README.md"
+
+    install -o root -g root -m 0644 \
+        "$SOURCE_DIR/requirements.txt" \
+        "$APP_DIR/requirements.txt"
+
+    install -o root -g root -m 0755 \
+        "$SOURCE_DIR/install.sh" \
+        "$APP_DIR/install.sh"
+
+else
+
+    echo "El origen y el destino son el mismo directorio."
+    echo "Se omite la sincronización para evitar sobrescribir archivos."
 
 fi
 
@@ -254,7 +311,7 @@ bash "$APP_DIR/scripts/configure_security.sh"
 echo
 echo "[5/7] Retirando servicio independiente de Upterm..."
 
-# Upterm ahora se inicia desde el bot de Telegram.
+# Upterm se inicia desde el bot de Telegram.
 # No debe existir una segunda unidad ejecutándolo.
 
 if [[ -f "$SYSTEMD_DIR/$SERVICE_UPTERM" ||
