@@ -10,15 +10,12 @@ from pathlib import Path
 # CONFIGURACION
 # ==========================================
 
-UPTERM_SERVER = os.getenv(
-    "UPTERM_SERVER",
-    ""
-).strip()
+UPTERM_SERVER = os.getenv("UPTERM_SERVER", "").strip()
 
-UPTERM_AUTHORIZED_USER = os.getenv(
-    "UPTERM_AUTHORIZED_USER",
-    ""
-).strip()
+AUTHORIZED_USERS = [
+    os.getenv("UPTERM_AUTHORIZED_USER", "").strip(),
+    os.getenv("UPTERM_AUTHORIZED_USER_2", "").strip(),
+]
 
 KNOWN_HOSTS = Path(
     "/etc/raspberry-telebot-installer/upterm_known_hosts"
@@ -31,6 +28,11 @@ EXPECTED_HOST_MARKER = (
 EXPECTED_HOST_MARKER_443 = (
     "@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 "
 )
+
+EXPECTED_USERS = {
+    "github:OliverAmadeus",
+    "github:KaworuSSSS",
+}
 
 
 # ==========================================
@@ -55,7 +57,7 @@ def find_upterm():
         if path.is_file() and os.access(path, os.X_OK):
             return str(path)
 
-    raise RuntimeError(
+    raise FileNotFoundError(
         "No se encontró el ejecutable Upterm."
     )
 
@@ -66,41 +68,49 @@ def find_upterm():
 
 def validate_configuration():
 
-    # Validar servidor.
-
     if UPTERM_SERVER != "wss://uptermd.upterm.dev":
-        raise RuntimeError(
-            "UPTERM_SERVER no coincide con el relay autorizado."
+
+        raise ValueError(
+            "Servidor Upterm no permitido."
         )
 
-    # Validar usuario GitHub.
+    if set(AUTHORIZED_USERS) != EXPECTED_USERS:
 
-    if not re.fullmatch(
-        r"github:[A-Za-z0-9-]+",
-        UPTERM_AUTHORIZED_USER
-    ):
-        raise RuntimeError(
-            "UPTERM_AUTHORIZED_USER no es válido."
+        raise ValueError(
+            "Las dos cuentas GitHub autorizadas "
+            "no coinciden con la configuración esperada."
         )
 
-    # Validar archivo de confianza.
+    for user in AUTHORIZED_USERS:
 
-    if not KNOWN_HOSTS.is_file():
-        raise RuntimeError(
-            f"No existe el archivo de confianza: {KNOWN_HOSTS}"
-        )
+        if not re.fullmatch(
+            r"github:[A-Za-z0-9-]+",
+            user
+        ):
+
+            raise ValueError(
+                "Formato de usuario GitHub no válido."
+            )
+
+    # Comprobar archivo de confianza.
 
     if KNOWN_HOSTS.is_symlink():
-        raise RuntimeError(
-            "El archivo known_hosts no puede ser un enlace simbólico."
+
+        raise ValueError(
+            "known_hosts no puede ser un enlace simbólico."
+        )
+
+    if not KNOWN_HOSTS.is_file():
+
+        raise FileNotFoundError(
+            "No existe el archivo de confianza del relay."
         )
 
     if KNOWN_HOSTS.stat().st_size == 0:
-        raise RuntimeError(
+
+        raise ValueError(
             "El archivo known_hosts está vacío."
         )
-
-    # Verificar las dos entradas esperadas.
 
     content = KNOWN_HOSTS.read_text(
         encoding="utf-8"
@@ -112,16 +122,18 @@ def validate_configuration():
         line.startswith(EXPECTED_HOST_MARKER)
         for line in lines
     ):
-        raise RuntimeError(
-            "Falta la clave de confianza del relay Upterm."
+
+        raise ValueError(
+            "Falta la clave de confianza del relay."
         )
 
     if not any(
         line.startswith(EXPECTED_HOST_MARKER_443)
         for line in lines
     ):
-        raise RuntimeError(
-            "Falta la clave de confianza del relay Upterm en el puerto 443."
+
+        raise ValueError(
+            "Falta la clave de confianza del relay en puerto 443."
         )
 
 
@@ -131,79 +143,76 @@ def validate_configuration():
 
 def main():
 
+    validate_configuration()
+
+    executable = find_upterm()
+
+    command = [
+        executable,
+        "host",
+
+        "--server",
+        UPTERM_SERVER,
+
+        "--authorized-user",
+        AUTHORIZED_USERS[0],
+
+        "--authorized-user",
+        AUTHORIZED_USERS[1],
+
+        "--known-hosts",
+        str(KNOWN_HOSTS),
+
+        "--accept",
+
+        "--no-sftp",
+
+        "--hide-client-ip",
+
+        "--",
+
+        "/bin/bash",
+        "-l",
+    ]
+
+    print("==========================================")
+    print(" INICIANDO UPT​ERM")
+    print("==========================================")
+
+    print("Servidor:", UPTERM_SERVER)
+
+    print("Cuentas autorizadas:")
+
+    for user in AUTHORIZED_USERS:
+        print(" -", user)
+
+    print("SFTP/SCP: desactivado")
+    print("Verificación del relay: activada")
+
+    print("Iniciando terminal remota...")
+
+    os.execv(
+        executable,
+        command
+    )
+
+
+# ==========================================
+# EJECUCION PRINCIPAL
+# ==========================================
+
+if __name__ == "__main__":
+
     try:
 
-        validate_configuration()
-
-        executable = find_upterm()
-
-        command = [
-            executable,
-            "host",
-
-            "--server",
-            UPTERM_SERVER,
-
-            "--authorized-user",
-            UPTERM_AUTHORIZED_USER,
-
-            "--known-hosts",
-            str(KNOWN_HOSTS),
-
-            "--accept",
-
-            "--no-sftp",
-
-            "--hide-client-ip",
-
-            "--",
-
-            "/bin/bash",
-            "-l",
-        ]
-
-        print(
-            "Iniciando servidor Upterm...",
-            flush=True
-        )
-
-        print(
-            f"Relay: {UPTERM_SERVER}",
-            flush=True
-        )
-
-        print(
-            f"Usuario autorizado: {UPTERM_AUTHORIZED_USER}",
-            flush=True
-        )
-
-        print(
-            "Transferencia SFTP: desactivada",
-            flush=True
-        )
-
-        # Reemplazar el proceso Python por Upterm.
-        # systemd supervisará directamente Upterm.
-
-        os.execv(
-            executable,
-            command
-        )
+        main()
 
     except Exception as error:
 
         print(
-            f"ERROR iniciando Upterm: {error}",
-            file=sys.stderr,
-            flush=True
+            "ERROR UPT​ERM:",
+            str(error),
+            file=sys.stderr
         )
 
         sys.exit(1)
-
-
-# ==========================================
-# PUNTO DE ENTRADA
-# ==========================================
-
-if __name__ == "__main__":
-    main()
