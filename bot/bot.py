@@ -35,6 +35,11 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Evitar que HTTPX registre URL que contienen
+# el token de autenticación de Telegram.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # ==========================================
 # AUTORIZACION
@@ -207,7 +212,7 @@ async def terminal_handler(
 
 
 # ==========================================
-# CONTROL UPT​ERM
+# CONTROL UPT​​ERM
 # ==========================================
 
 async def upterm_handler(
