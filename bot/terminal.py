@@ -3,7 +3,6 @@ import asyncio
 import os
 import shlex
 import signal
-from pathlib import Path
 
 
 # ==========================================
@@ -15,8 +14,8 @@ HOME_DIR = "/var/lib/raspberry-telebot"
 COMMAND_TIMEOUT = 120
 MAX_OUTPUT_SIZE = 1024 * 1024  # 1 MiB por canal
 READ_CHUNK_SIZE = 65536
+TERMINATION_GRACE_PERIOD = 3
 
-# Directorio independiente por usuario Telegram.
 working_directories = {}
 
 
@@ -29,7 +28,7 @@ def get_command_environment():
         "HOME": HOME_DIR,
         "USER": "raspberry-telebot",
         "LOGNAME": "raspberry-telebot",
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "TERM": "xterm-256color",
@@ -119,18 +118,21 @@ async def terminate_process_group(process):
     try:
         await asyncio.wait_for(
             process.wait(),
-            timeout=5
+            timeout=TERMINATION_GRACE_PERIOD
         )
 
     except asyncio.TimeoutError:
+        pass
 
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
+    # El proceso principal puede haber terminado,
+    # pero todavía pueden existir procesos hijos.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
 
-        except ProcessLookupError:
-            pass
+    except ProcessLookupError:
+        pass
 
-        await process.wait()
+    await process.wait()
 
 
 # ==========================================
@@ -140,6 +142,7 @@ async def terminate_process_group(process):
 async def read_limited(stream, exceeded_event, process):
 
     collected = bytearray()
+    exceeded = False
 
     while True:
 
@@ -148,31 +151,25 @@ async def read_limited(stream, exceeded_event, process):
         if not chunk:
             break
 
-        remaining = MAX_OUTPUT_SIZE + 1 - len(collected)
+        remaining = MAX_OUTPUT_SIZE - len(collected)
 
         if remaining > 0:
             collected.extend(chunk[:remaining])
 
-        if len(collected) > MAX_OUTPUT_SIZE:
+        if len(chunk) > remaining and not exceeded:
+
+            exceeded = True
 
             if not exceeded_event.is_set():
 
                 exceeded_event.set()
 
-                try:
-                    os.killpg(
-                        process.pid,
-                        signal.SIGTERM
-                    )
+                await terminate_process_group(process)
 
-                except ProcessLookupError:
-                    pass
+            # Continuar leyendo para vaciar el canal,
+            # sin almacenar más datos.
 
-            break
-
-    exceeded = len(collected) > MAX_OUTPUT_SIZE
-
-    return bytes(collected[:MAX_OUTPUT_SIZE]), exceeded
+    return bytes(collected), exceeded
 
 
 # ==========================================
@@ -180,15 +177,18 @@ async def read_limited(stream, exceeded_event, process):
 # ==========================================
 
 async def execute_command(user_id, command):
+
     """
     Ejecuta comandos Linux mediante Bash.
 
     Características:
-    - Comandos arbitrarios dentro de los permisos del servicio.
-    - Directorio persistente por usuario durante la ejecución del bot.
+    - Comandos arbitrarios dentro de los permisos
+      del usuario raspberry-telebot.
+    - Acceso sudo según la configuración de sudoers.
+    - Directorio independiente por usuario Telegram.
     - Entorno controlado.
     - Tiempo máximo de ejecución.
-    - Lectura limitada de stdout y stderr.
+    - Salida limitada a 1 MiB por canal.
     - Terminación del grupo de procesos.
     """
 
@@ -240,8 +240,8 @@ async def execute_command(user_id, command):
             start_new_session=True
         )
 
-    except Exception as error:
-        return f"No se pudo iniciar el comando: {error}"
+    except Exception:
+        return "No se pudo iniciar el comando. Revisa los permisos y el registro."
 
     # ======================================
     # LEER SALIDAS SIMULTANEAMENTE
@@ -290,14 +290,20 @@ async def execute_command(user_id, command):
 
         await terminate_process_group(process)
 
-        await gather_task
+        await asyncio.wait_for(
+            gather_task,
+            timeout=10
+        )
 
-    except Exception:
+    except BaseException:
 
         await terminate_process_group(process)
 
         if not gather_task.done():
-            await gather_task
+            await asyncio.wait_for(
+                gather_task,
+                timeout=10
+            )
 
         raise
 
