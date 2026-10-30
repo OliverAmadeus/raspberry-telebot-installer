@@ -26,16 +26,21 @@ ExecStart=/opt/raspberry-telebot-installer/venv/bin/python /opt/raspberry-telebo
 Restart=on-failure
 RestartSec=10
 
+# SEGURIDAD
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
 RestrictSUIDSGID=true
 LockPersonality=true
-UMask=0077
+
+# PERMISOS DE ESCRITURA
+ReadWritePaths=/var/lib/raspberry-telebot
 
 StateDirectory=raspberry-telebot
 StateDirectoryMode=0750
+
+UMask=0077
 
 TimeoutStopSec=15
 
