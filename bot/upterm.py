@@ -10,16 +10,17 @@ from pathlib import Path
 # ==========================================
 
 UPTERM_SERVER = os.getenv(
-    "UPTERM_SERVER",
-    "wss://uptermd.upterm.dev"
+    "UPTERM_SERVER", ""
 ).strip()
 
 UPTERM_AUTHORIZED_USER = os.getenv(
-    "UPTERM_AUTHORIZED_USER",
-    "github:KaworuSSSS"
+    "UPTERM_AUTHORIZED_USER", ""
 ).strip()
 
-KNOWN_HOSTS = Path.home() / ".ssh" / "known_hosts"
+HOME_DIR = Path.home()
+
+SSH_DIR = HOME_DIR / ".ssh"
+KNOWN_HOSTS = SSH_DIR / "known_hosts"
 
 
 # ==========================================
@@ -36,7 +37,7 @@ def find_upterm():
     possible_paths = [
         Path("/usr/local/bin/upterm"),
         Path("/usr/bin/upterm"),
-        Path.home() / "go/bin/upterm",
+        HOME_DIR / "go/bin/upterm",
     ]
 
     for path in possible_paths:
@@ -54,9 +55,9 @@ def find_upterm():
 
 def validate_configuration():
 
-    if not UPTERM_SERVER.startswith("wss://"):
+    if UPTERM_SERVER != "wss://uptermd.upterm.dev":
         raise ValueError(
-            "El servidor debe utilizar WSS."
+            "El servidor Upterm no coincide con el relay autorizado."
         )
 
     if not UPTERM_AUTHORIZED_USER.startswith("github:"):
@@ -66,14 +67,41 @@ def validate_configuration():
 
     username = UPTERM_AUTHORIZED_USER.split(":", 1)[1]
 
-    if not username or "/" in username:
+    if not username:
+        raise ValueError(
+            "Falta el usuario GitHub autorizado."
+        )
+
+    if not all(
+        character.isalnum() or character == "-"
+        for character in username
+    ):
         raise ValueError(
             "El usuario GitHub configurado no es válido."
         )
 
+    if not SSH_DIR.is_dir():
+        raise FileNotFoundError(
+            f"No existe el directorio SSH: {SSH_DIR}"
+        )
+
     if not KNOWN_HOSTS.is_file():
         raise FileNotFoundError(
-            f"No existe el archivo de claves verificadas: {KNOWN_HOSTS}"
+            f"No existe known_hosts: {KNOWN_HOSTS}"
+        )
+
+    if KNOWN_HOSTS.stat().st_size == 0:
+        raise ValueError(
+            "El archivo known_hosts está vacío."
+        )
+
+    known_hosts_content = KNOWN_HOSTS.read_text(
+        encoding="utf-8"
+    )
+
+    if "@cert-authority uptermd.upterm.dev ssh-ed25519" not in known_hosts_content:
+        raise ValueError(
+            "No se encontró la clave oficial del relay."
         )
 
 
@@ -98,6 +126,7 @@ def main():
         str(KNOWN_HOSTS),
         "--accept",
         "--no-sftp",
+        "--hide-client-ip",
         "--",
         "/bin/bash",
         "-l",
@@ -112,8 +141,10 @@ def main():
     print(f"Usuario autorizado: {UPTERM_AUTHORIZED_USER}")
     print(f"Claves verificadas: {KNOWN_HOSTS}")
     print("SFTP/SCP: desactivado")
+    print("IP de invitados: oculta")
     print("Acceso interactivo: habilitado")
-    print("Iniciando terminal remota...")
+    print("Modo: primer plano")
+    print("Iniciando terminal remota...", flush=True)
 
     os.execv(executable, command)
 
