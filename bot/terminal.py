@@ -29,7 +29,10 @@ def get_command_environment():
         "HOME": HOME_DIR,
         "USER": "raspberry-telebot",
         "LOGNAME": "raspberry-telebot",
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PATH": (
+            "/usr/local/sbin:/usr/local/bin:"
+            "/usr/sbin:/usr/bin:/sbin:/bin"
+        ),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "TERM": "xterm-256color",
@@ -41,7 +44,10 @@ def get_command_environment():
 # ==========================================
 
 def get_working_directory(user_id):
-    return working_directories.get(user_id, HOME_DIR)
+    return working_directories.get(
+        user_id,
+        HOME_DIR,
+    )
 
 
 # ==========================================
@@ -70,13 +76,13 @@ def change_directory(user_id, command):
         elif destination.startswith("~/"):
             destination = os.path.join(
                 HOME_DIR,
-                destination[2:]
+                destination[2:],
             )
 
         elif not os.path.isabs(destination):
             destination = os.path.join(
                 current_dir,
-                destination
+                destination,
             )
 
         destination = os.path.abspath(destination)
@@ -87,7 +93,10 @@ def change_directory(user_id, command):
                 f"{destination}"
             )
 
-        if not os.access(destination, os.X_OK | os.R_OK):
+        if not os.access(
+            destination,
+            os.X_OK | os.R_OK,
+        ):
             return (
                 "No tienes permisos para acceder al directorio:\n"
                 f"{destination}"
@@ -108,9 +117,14 @@ def change_directory(user_id, command):
 # TERMINAR GRUPO DE PROCESOS
 # ==========================================
 
-async def terminate_process_group(process, lock, state):
+async def terminate_process_group(
+    process,
+    lock,
+    state,
+):
     """
     Termina el proceso principal y sus procesos hijos.
+
     El bloqueo evita que stdout y stderr envíen señales
     simultáneamente al mismo grupo.
     """
@@ -121,10 +135,11 @@ async def terminate_process_group(process, lock, state):
             await process.wait()
             return
 
-        state["terminated"] = True
-
         try:
-            os.killpg(process.pid, signal.SIGTERM)
+            os.killpg(
+                process.pid,
+                signal.SIGTERM,
+            )
 
         except ProcessLookupError:
             pass
@@ -132,31 +147,41 @@ async def terminate_process_group(process, lock, state):
         try:
             await asyncio.wait_for(
                 asyncio.shield(process.wait()),
-                timeout=TERMINATION_GRACE_PERIOD
+                timeout=TERMINATION_GRACE_PERIOD,
             )
 
         except asyncio.TimeoutError:
             pass
 
-        # También elimina posibles procesos hijos
-        # aunque el proceso principal ya haya terminado.
+        # Eliminar también posibles procesos hijos
+        # aunque el proceso principal haya terminado.
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(
+                process.pid,
+                signal.SIGKILL,
+            )
 
         except ProcessLookupError:
             pass
 
         await process.wait()
 
+        state["terminated"] = True
+
 
 # ==========================================
 # LEER SALIDA CON LIMITE DE MEMORIA
 # ==========================================
 
-async def read_limited(stream, exceeded_event, terminate):
+async def read_limited(
+    stream,
+    terminate,
+):
     """
     Lee un canal sin almacenar más de MAX_OUTPUT_SIZE.
-    Si supera el límite, solicita terminar el grupo.
+
+    Si supera el límite, solicita terminar el grupo
+    completo de procesos.
     """
 
     collected = bytearray()
@@ -178,12 +203,46 @@ async def read_limited(stream, exceeded_event, terminate):
 
             exceeded = True
 
-            if not exceeded_event.is_set():
-                exceeded_event.set()
-
             await terminate()
 
     return bytes(collected), exceeded
+
+
+# ==========================================
+# CANCELAR TAREAS DE LECTURA
+# ==========================================
+
+async def cancel_reader_tasks(
+    stdout_task,
+    stderr_task,
+    gather_task,
+):
+    """
+    Cancela las tareas de lectura y recoge sus resultados
+    para evitar tareas asíncronas pendientes.
+    """
+
+    for task in (stdout_task, stderr_task):
+        if not task.done():
+            task.cancel()
+
+    await asyncio.gather(
+        stdout_task,
+        stderr_task,
+        return_exceptions=True,
+    )
+
+    if not gather_task.done():
+        gather_task.cancel()
+
+    try:
+        await gather_task
+
+    except asyncio.CancelledError:
+        pass
+
+    except Exception:
+        pass
 
 
 # ==========================================
@@ -191,7 +250,6 @@ async def read_limited(stream, exceeded_event, terminate):
 # ==========================================
 
 async def execute_command(user_id, command):
-
     """
     Ejecuta comandos Linux mediante Bash.
 
@@ -203,6 +261,7 @@ async def execute_command(user_id, command):
     - Tiempo máximo de ejecución.
     - Salida limitada a 1 MiB por canal.
     - Terminación del grupo de procesos.
+    - Limpieza de tareas asíncronas.
     """
 
     command = command.strip()
@@ -221,7 +280,10 @@ async def execute_command(user_id, command):
         parsed_command = []
 
     if parsed_command and parsed_command[0] == "cd":
-        return change_directory(user_id, command)
+        return change_directory(
+            user_id,
+            command,
+        )
 
     # ======================================
     # VALIDAR DIRECTORIO
@@ -233,8 +295,14 @@ async def execute_command(user_id, command):
         current_dir = HOME_DIR
         working_directories[user_id] = HOME_DIR
 
-    if not os.access(current_dir, os.X_OK | os.R_OK):
-        return "No tienes permisos para acceder al directorio actual."
+    if not os.access(
+        current_dir,
+        os.X_OK | os.R_OK,
+    ):
+        return (
+            "No tienes permisos para acceder "
+            "al directorio actual."
+        )
 
     # ======================================
     # CREAR PROCESO
@@ -250,52 +318,54 @@ async def execute_command(user_id, command):
             env=get_command_environment(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True
+            start_new_session=True,
         )
 
     except (OSError, asyncio.SubprocessError):
-        return "No se pudo iniciar el comando. Revisa los permisos y el registro."
+        return (
+            "No se pudo iniciar el comando. "
+            "Revisa los permisos y el registro."
+        )
 
     # ======================================
     # CONTROL DE TERMINACION
     # ======================================
 
     termination_lock = asyncio.Lock()
-    termination_state = {"terminated": False}
+
+    termination_state = {
+        "terminated": False,
+    }
 
     async def terminate():
         await terminate_process_group(
             process,
             termination_lock,
-            termination_state
+            termination_state,
         )
 
     # ======================================
     # LEER SALIDAS SIMULTANEAMENTE
     # ======================================
 
-    exceeded_event = asyncio.Event()
-
     stdout_task = asyncio.create_task(
         read_limited(
             process.stdout,
-            exceeded_event,
-            terminate
+            terminate,
         )
     )
 
     stderr_task = asyncio.create_task(
         read_limited(
             process.stderr,
-            exceeded_event,
-            terminate
+            terminate,
         )
     )
 
     gather_task = asyncio.gather(
         stdout_task,
         stderr_task,
-        process.wait()
+        process.wait(),
     )
 
     # ======================================
@@ -308,67 +378,79 @@ async def execute_command(user_id, command):
 
         await asyncio.wait_for(
             asyncio.shield(gather_task),
-            timeout=COMMAND_TIMEOUT
+            timeout=COMMAND_TIMEOUT,
         )
 
     except asyncio.TimeoutError:
 
         timed_out = True
 
-        await terminate()
+        # Proteger la terminación frente a cancelaciones.
+        await asyncio.shield(terminate())
 
         try:
             await asyncio.wait_for(
                 asyncio.shield(gather_task),
-                timeout=PIPE_CLEANUP_TIMEOUT
+                timeout=PIPE_CLEANUP_TIMEOUT,
             )
 
         except asyncio.TimeoutError:
-            stdout_task.cancel()
-            stderr_task.cancel()
 
-            await asyncio.gather(
+            await cancel_reader_tasks(
                 stdout_task,
                 stderr_task,
-                return_exceptions=True
+                gather_task,
             )
 
     except asyncio.CancelledError:
 
-        await terminate()
+        # Si se cancela el comando, terminar también
+        # sus procesos secundarios.
+        await asyncio.shield(terminate())
 
-        stdout_task.cancel()
-        stderr_task.cancel()
-
-        await asyncio.gather(
+        await cancel_reader_tasks(
             stdout_task,
             stderr_task,
-            return_exceptions=True
+            gather_task,
         )
 
         raise
 
     except Exception:
 
-        await terminate()
+        await asyncio.shield(terminate())
 
-        stdout_task.cancel()
-        stderr_task.cancel()
-
-        await asyncio.gather(
+        await cancel_reader_tasks(
             stdout_task,
             stderr_task,
-            return_exceptions=True
+            gather_task,
         )
 
-        return "Ocurrió un error durante la ejecución del comando."
+        return (
+            "Ocurrió un error durante la ejecución "
+            "del comando."
+        )
 
     # ======================================
     # RECUPERAR RESULTADOS
     # ======================================
 
-    if stdout_task.cancelled() or stderr_task.cancelled():
-        return "El comando terminó, pero no se pudo recuperar toda la salida."
+    if (
+        stdout_task.cancelled()
+        or stderr_task.cancelled()
+        or stdout_task.done() is False
+        or stderr_task.done() is False
+    ):
+        return (
+            "El comando terminó, pero no se pudo "
+            "recuperar toda la salida."
+        )
+
+    if stdout_task.exception() or stderr_task.exception():
+        return (
+            "Ocurrió un error al recuperar "
+            "la salida del comando."
+        )
 
     stdout, stdout_exceeded = stdout_task.result()
     stderr, stderr_exceeded = stderr_task.result()
@@ -377,13 +459,20 @@ async def execute_command(user_id, command):
     # PREPARAR RESULTADO
     # ======================================
 
-    output = stdout.decode(errors="replace").strip()
-    errors = stderr.decode(errors="replace").strip()
+    output = stdout.decode(
+        errors="replace"
+    ).strip()
+
+    errors = stderr.decode(
+        errors="replace"
+    ).strip()
 
     result = output
 
     if errors:
-        result += ("\n" if result else "") + errors
+        result += (
+            "\n" if result else ""
+        ) + errors
 
     if timed_out:
         result += (
@@ -404,3 +493,4 @@ async def execute_command(user_id, command):
         )
 
     return result
+
