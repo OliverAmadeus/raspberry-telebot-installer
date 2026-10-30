@@ -8,15 +8,13 @@ set -Eeuo pipefail
 
 APP_NAME="raspberry-telebot-installer"
 APP_DIR="/opt/${APP_NAME}"
+
 CONFIG_DIR="/etc/raspberry-telebot-installer"
 
 SERVICE_TELEGRAM="telegram-bot.service"
 SERVICE_UPTERM="upterm.service"
 
-SERVICES=(
-    "$SERVICE_TELEGRAM"
-    "$SERVICE_UPTERM"
-)
+SYSTEMD_DIR="/etc/systemd/system"
 
 # ==========================================
 # MANEJO DE ERRORES
@@ -36,7 +34,6 @@ error_handler() {
     echo
     echo "Revisa los registros con:"
     echo "journalctl -u telegram-bot.service -n 50 --no-pager"
-    echo "journalctl -u upterm.service -n 50 --no-pager"
 
     exit "$exit_code"
 }
@@ -76,11 +73,11 @@ echo "Destino: $APP_DIR"
 REQUIRED_FILES=(
     "README.md"
     "requirements.txt"
+    "install.sh"
     "bot/bot.py"
     "bot/terminal.py"
     "bot/upterm.py"
     "systemd/telegram-bot.service"
-    "systemd/upterm.service"
     "scripts/install_dependencies.sh"
     "scripts/configure_security.sh"
 )
@@ -108,6 +105,8 @@ REQUIRED_COMMANDS=(
     cp
     python3
     bash
+    getent
+    id
 )
 
 for command in "${REQUIRED_COMMANDS[@]}"; do
@@ -167,7 +166,7 @@ echo "Arquitectura: $ARCH"
 if ! systemctl is-system-running >/dev/null 2>&1; then
 
     echo "AVISO: systemd no informa un estado completamente operativo."
-    echo "Se continuará, pero la activación de servicios podría fallar."
+    echo "Se continuará, pero la activación podría fallar."
 
 fi
 
@@ -226,9 +225,7 @@ echo
 echo "[3/7] Preparando entorno Python..."
 
 if [[ ! -d "$APP_DIR/venv" ]]; then
-
     python3 -m venv "$APP_DIR/venv"
-
 fi
 
 if [[ ! -x "$APP_DIR/venv/bin/python" ]]; then
@@ -251,37 +248,59 @@ echo "[4/7] Configurando usuario y credenciales..."
 bash "$APP_DIR/scripts/configure_security.sh"
 
 # ==========================================
-# INSTALAR SERVICIOS SYSTEMD
+# RETIRAR SERVICIO INDEPENDIENTE DE UPT​​ERM
 # ==========================================
 
 echo
-echo "[5/7] Instalando servicios..."
+echo "[5/7] Retirando servicio independiente de Upterm..."
 
-for service in "${SERVICES[@]}"; do
+# Upterm ahora se inicia desde el bot de Telegram.
+# No debe existir una segunda unidad ejecutándolo.
 
-    if [[ ! -s "$APP_DIR/systemd/$service" ]]; then
-        echo "ERROR: servicio vacío: $service"
-        exit 1
-    fi
+if [[ -f "$SYSTEMD_DIR/$SERVICE_UPTERM" ||
+      -L "$SYSTEMD_DIR/$SERVICE_UPTERM" ]]; then
 
-    install -m 0644 \
-        "$APP_DIR/systemd/$service" \
-        "/etc/systemd/system/$service"
+    systemctl stop "$SERVICE_UPTERM" || true
+    systemctl disable "$SERVICE_UPTERM" || true
 
-done
+    rm -f "$SYSTEMD_DIR/$SERVICE_UPTERM"
+
+fi
+
+# Limpiar posibles enlaces de activación antiguos.
+rm -f "$SYSTEMD_DIR/multi-user.target.wants/$SERVICE_UPTERM"
+
+systemctl daemon-reload
+
+systemctl reset-failed "$SERVICE_UPTERM" || true
+
+# ==========================================
+# INSTALAR SERVICIO DE TELEGRAM
+# ==========================================
+
+echo
+echo "Instalando servicio de Telegram..."
+
+if [[ ! -s "$APP_DIR/systemd/$SERVICE_TELEGRAM" ]]; then
+    echo "ERROR: servicio de Telegram vacío."
+    exit 1
+fi
+
+install -m 0644 \
+    "$APP_DIR/systemd/$SERVICE_TELEGRAM" \
+    "$SYSTEMD_DIR/$SERVICE_TELEGRAM"
 
 systemctl daemon-reload
 
 # ==========================================
-# VALIDAR SERVICIOS
+# VALIDAR SERVICIO
 # ==========================================
 
 echo
 echo "Validando configuración de systemd..."
 
 systemd-analyze verify \
-    "/etc/systemd/system/$SERVICE_TELEGRAM" \
-    "/etc/systemd/system/$SERVICE_UPTERM"
+    "$SYSTEMD_DIR/$SERVICE_TELEGRAM"
 
 echo "Configuración de systemd válida."
 
@@ -292,71 +311,57 @@ echo "Configuración de systemd válida."
 echo
 echo "[6/7] Habilitando inicio automático..."
 
-for service in "${SERVICES[@]}"; do
+systemctl enable "$SERVICE_TELEGRAM"
 
-    systemctl enable "$service"
-
-    systemctl reset-failed "$service" || true
-
-done
+systemctl reset-failed "$SERVICE_TELEGRAM" || true
 
 # ==========================================
-# INICIAR SERVICIOS
+# INICIAR SERVICIO
 # ==========================================
 
 echo
-echo "[7/7] Iniciando servicios..."
+echo "[7/7] Iniciando bot de Telegram..."
 
-for service in "${SERVICES[@]}"; do
+if systemctl is-active --quiet "$SERVICE_TELEGRAM"; then
 
-    echo
-    echo "Iniciando $service..."
+    systemctl restart "$SERVICE_TELEGRAM"
 
-    if systemctl is-active --quiet "$service"; then
+else
 
-        systemctl restart "$service"
+    systemctl start "$SERVICE_TELEGRAM"
 
-    else
+fi
 
-        systemctl start "$service"
+sleep 3
 
-    fi
+if ! systemctl is-active --quiet "$SERVICE_TELEGRAM"; then
 
-    sleep 3
+    echo "ERROR: el bot de Telegram no está activo."
 
-    if ! systemctl is-active --quiet "$service"; then
+    systemctl --no-pager --full status "$SERVICE_TELEGRAM" || true
 
-        echo "ERROR: $service no está activo."
+    journalctl -u "$SERVICE_TELEGRAM" -n 40 --no-pager || true
 
-        systemctl --no-pager --full status "$service" || true
+    exit 1
 
-        journalctl -u "$service" -n 40 --no-pager || true
+fi
 
-        exit 1
+MAIN_PID="$(
+    systemctl show \
+        --property=MainPID \
+        --value \
+        "$SERVICE_TELEGRAM"
+)"
 
-    fi
+if [[ ! "$MAIN_PID" =~ ^[1-9][0-9]*$ ]]; then
 
-    MAIN_PID="$(
-        systemctl show \
-            --property=MainPID \
-            --value \
-            "$service"
-    )"
+    echo "ERROR: el bot no tiene un proceso principal activo."
 
-    if [[ ! "$MAIN_PID" =~ ^[1-9][0-9]*$ ]]; then
+    journalctl -u "$SERVICE_TELEGRAM" -n 40 --no-pager || true
 
-        echo "ERROR: $service no tiene un proceso principal activo."
+    exit 1
 
-        journalctl -u "$service" -n 40 --no-pager || true
-
-        exit 1
-
-    fi
-
-    echo "$service: ACTIVO"
-    echo "PID principal: $MAIN_PID"
-
-done
+fi
 
 # ==========================================
 # RESULTADO
@@ -374,19 +379,27 @@ echo "Bot Telegram:"
 systemctl --no-pager --full status "$SERVICE_TELEGRAM"
 
 echo
-echo "Upterm:"
-systemctl --no-pager --full status "$SERVICE_UPTERM"
+echo "PID principal: $MAIN_PID"
 
 echo
 echo "Directorio: $APP_DIR"
 echo "Configuración: $CONFIG_DIR/bot.env"
-echo "Claves de confianza: $CONFIG_DIR/upterm_known_hosts"
+echo "Estado: /var/lib/raspberry-telebot"
+echo "Claves de confianza:"
+echo "/var/lib/raspberry-telebot/.ssh/known_hosts"
 
 echo
-echo "Registros:"
+echo "Servicio Telegram: habilitado"
+echo "Inicio automático: activado"
+echo "Servicio independiente Upterm: retirado"
+
+echo
+echo "Para consultar los registros:"
 echo "sudo journalctl -u telegram-bot.service -f"
-echo "sudo journalctl -u upterm.service -f"
 
 echo
-echo "Ambos servicios están habilitados"
-echo "para iniciar automáticamente con la Raspberry Pi."
+echo "Para iniciar una sesión remota:"
+echo "Envía /upterm iniciar al bot de Telegram."
+
+echo
+echo "La instalación terminó correctamente."
