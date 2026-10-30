@@ -13,13 +13,15 @@ El sistema permite administrar Linux remotamente desde Telegram y disponer de un
 - Instalación automatizada de dependencias.
 - Instalación de Upterm CLI con verificación SHA256.
 - Entorno virtual independiente de Python.
-- Bot de Telegram basado en `python-telegram-bot`.
+- Bot de Telegram basado en `python-telegram-bot` 22.x.
 - Ejecución de comandos Linux mediante Bash.
-- Cambio de directorios desde Telegram.
+- Cambio persistente de directorios desde Telegram.
 - Visualización de resultados de comandos.
-- Autenticación mediante Telegram User ID.
+- Autenticación mediante Telegram User ID y chat privado.
 - Acceso interactivo mediante Upterm y WebSocket seguro.
-- Autorización de Upterm mediante claves públicas de GitHub.
+- Autorización de Upterm mediante cuentas GitHub.
+- Dos cuentas GitHub autorizadas.
+- Conexión al relay mediante WSS por el puerto 443.
 - Transferencia SFTP/SCP desactivada.
 - Servicios systemd con inicio automático.
 - Credenciales y configuración fuera del repositorio.
@@ -37,19 +39,22 @@ El sistema permite administrar Linux remotamente desde Telegram y disponer de un
 
 Antes de instalar:
 
-- Acceso a una Raspberry Pi con permisos administrativos.
+- Raspberry Pi con permisos administrativos.
 - Conexión a Internet.
 - Acceso al repositorio privado de GitHub.
 - Un bot creado mediante BotFather.
 - El Telegram User ID autorizado.
-- Una cuenta GitHub con la clave SSH pública que utilizarás para conectarte mediante Upterm.
+- Las cuentas GitHub autorizadas para Upterm:
+  - `OliverAmadeus`
+  - `KaworuSSSS`
+- Una clave SSH pública registrada en cada cuenta GitHub que se utilizará para autenticarse mediante Upterm.
 
 ## Instalación
 
 Clonar el repositorio:
 
 ```bash
-git clone https://github.com/KaworuSSSS/raspberry-telebot-installer.git
+git clone https://github.com/OliverAmadeus/raspberry-telebot-installer.git
 ```
 
 Entrar en el directorio:
@@ -64,11 +69,12 @@ Ejecutar el instalador:
 sudo bash install.sh
 ```
 
-Durante la instalación se solicitarán:
+Durante la primera instalación se solicitarán:
 
 - Token del bot de Telegram.
 - Telegram User ID autorizado.
-- Nombre de usuario GitHub autorizado para Upterm.
+
+Las dos cuentas GitHub autorizadas para Upterm ya están definidas en la configuración del instalador.
 
 El instalador configura las credenciales en:
 
@@ -76,7 +82,13 @@ El instalador configura las credenciales en:
 /etc/raspberry-telebot-installer/bot.env
 ```
 
-Las credenciales no deben guardarse en GitHub ni compartirse públicamente.
+La clave de confianza del relay se almacena en:
+
+```text
+/etc/raspberry-telebot-installer/upterm_known_hosts
+```
+
+**Importante:** las credenciales y los archivos de confianza no deben guardarse en GitHub ni compartirse públicamente.
 
 ## Arquitectura
 
@@ -135,19 +147,22 @@ Ambos servicios se habilitan para iniciar automáticamente al arrancar la Raspbe
 - Acceso al bot restringido por Telegram User ID y chat privado.
 - Credenciales protegidas mediante permisos de archivo.
 - Usuario de sistema dedicado para ejecutar los servicios.
-- Acceso a Upterm restringido mediante claves públicas GitHub.
+- Acceso a Upterm restringido a `OliverAmadeus` y `KaworuSSSS`.
 - Verificación de la identidad del relay mediante `known_hosts`.
-- Conexión al relay mediante WSS.
+- Conexión al relay mediante WSS por el puerto 443.
 - SFTP/SCP desactivado.
 - Servicios systemd con medidas de aislamiento.
+- Archivos de configuración separados del código del proyecto.
 
 ### Permisos de ejecución
 
 Los comandos enviados mediante Telegram se ejecutan con Bash utilizando el usuario de sistema `raspberry-telebot`.
 
+La terminal interactiva de Upterm también utiliza ese usuario.
+
 Este usuario no dispone de privilegios administrativos por defecto. Por tanto, los comandos que requieren `root` o `sudo` no podrán ejecutarse automáticamente.
 
-La terminal permite ejecutar comandos Linux arbitrarios, sin una lista fija de comandos permitidos. Esto implica que el usuario autorizado debe proteger sus credenciales y el acceso a su cuenta de Telegram y GitHub.
+La terminal permite ejecutar comandos Linux arbitrarios, sin una lista fija de comandos permitidos. Esto implica que el usuario autorizado debe proteger sus credenciales y el acceso a sus cuentas de Telegram y GitHub.
 
 ## Directorios principales
 
@@ -155,6 +170,7 @@ La terminal permite ejecutar comandos Linux arbitrarios, sin una lista fija de c
 |---|---|
 | `/opt/raspberry-telebot-installer` | Archivos del proyecto |
 | `/etc/raspberry-telebot-installer` | Configuración y credenciales |
+| `/etc/raspberry-telebot-installer/upterm_known_hosts` | Claves de confianza del relay |
 | `/var/lib/raspberry-telebot` | Estado y datos del servicio |
 | `/usr/local/bin/upterm` | Ejecutable Upterm |
 
@@ -165,6 +181,7 @@ raspberry-telebot-installer/
 ├── README.md
 ├── install.sh
 ├── requirements.txt
+├── .gitignore
 ├── bot/
 │   ├── bot.py
 │   ├── terminal.py
@@ -178,6 +195,8 @@ raspberry-telebot-installer/
     ├── install_dependencies.sh
     └── configure_security.sh
 ```
+
+El archivo `upterm_known_hosts` se genera durante la instalación y no forma parte del repositorio.
 
 ## Comprobación de servicios
 
@@ -209,11 +228,21 @@ sudo journalctl -u upterm.service -f
 
 Para actualizar el proyecto:
 
-1. Entrar en el repositorio instalado.
+1. Entrar en el directorio donde se clonó el repositorio.
 2. Obtener los últimos cambios de la rama principal.
 3. Ejecutar nuevamente el instalador.
 
-El instalador conserva la configuración existente cuando el archivo de credenciales ya está creado.
+Ejemplo:
+
+```bash
+cd raspberry-telebot-installer
+git pull origin main
+sudo bash install.sh
+```
+
+El instalador actualiza los archivos del proyecto y los servicios. Si el archivo de credenciales ya existe, conserva el token de Telegram y el Telegram User ID, y valida la configuración de Upterm.
+
+No es necesario volver a introducir las credenciales si la configuración existente es válida.
 
 ## Proyecto
 
