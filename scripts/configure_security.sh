@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 # ==========================================
-# CONFIGURACION
+# RASPBERRY TELEBOT - CONFIGURACION SEGURA
 # ==========================================
 
 APP_USER="raspberry-telebot"
@@ -14,22 +14,17 @@ CONFIG_FILE="${CONFIG_DIR}/bot.env"
 
 STATE_DIR="/var/lib/raspberry-telebot"
 SSH_DIR="${STATE_DIR}/.ssh"
-
-KNOWN_HOSTS="${CONFIG_DIR}/upterm_known_hosts"
+KNOWN_HOSTS="${SSH_DIR}/known_hosts"
 
 TEMP_CONFIG=""
 TEMP_KNOWN_HOSTS=""
 
-# Cuentas GitHub autorizadas para Upterm.
-GITHUB_USER_1="OliverAmadeus"
-GITHUB_USER_2="KaworuSSSS"
+UPTERM_SERVER="wss://uptermd.upterm.dev"
 
 UPTERM_KNOWN_HOSTS='
 @cert-authority uptermd.upterm.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
 @cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
 '
-
-EXPECTED_FINGERPRINT="SHA256:9ajV8JqMe6jJE/s3TYjb/9xw7T0pfJ2+gADiBIJWDPE"
 
 # ==========================================
 # LIMPIEZA
@@ -51,7 +46,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ==========================================
-# VALIDAR PERMISOS
+# VALIDAR ROOT
 # ==========================================
 
 if [[ "$EUID" -ne 0 ]]; then
@@ -67,15 +62,12 @@ echo "=========================================="
 # VALIDAR RUTAS
 # ==========================================
 
-if [[ -L "$CONFIG_DIR" ]]; then
-    echo "ERROR: el directorio de configuración no puede ser un enlace simbólico."
-    exit 1
-fi
-
-if [[ -L "$STATE_DIR" ]]; then
-    echo "ERROR: el directorio de estado no puede ser un enlace simbólico."
-    exit 1
-fi
+for directory in "$CONFIG_DIR" "$STATE_DIR"; do
+    if [[ -L "$directory" ]]; then
+        echo "ERROR: no se permiten enlaces simbólicos: $directory"
+        exit 1
+    fi
+done
 
 # ==========================================
 # CREAR GRUPO
@@ -99,10 +91,8 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
         "$APP_USER"
 fi
 
-USER_GROUP="$(id -gn "$APP_USER")"
-
-if [[ "$USER_GROUP" != "$APP_GROUP" ]]; then
-    echo "ERROR: el usuario tiene un grupo principal inesperado."
+if [[ "$(id -gn "$APP_USER")" != "$APP_GROUP" ]]; then
+    echo "ERROR: el grupo principal del usuario es incorrecto."
     exit 1
 fi
 
@@ -118,8 +108,14 @@ install -d \
     -m 0750 \
     "$STATE_DIR"
 
+install -d \
+    -o "$APP_USER" \
+    -g "$APP_GROUP" \
+    -m 0700 \
+    "$SSH_DIR"
+
 # ==========================================
-# VALIDAR ARCHIVO EXISTENTE
+# VALIDAR CONFIGURACION EXISTENTE
 # ==========================================
 
 if [[ -L "$CONFIG_FILE" ]]; then
@@ -142,7 +138,7 @@ TELEGRAM_ID=""
 if [[ -f "$CONFIG_FILE" ]]; then
 
     echo
-    echo "Se encontró una configuración existente."
+    echo "Configuración existente encontrada."
     echo "Se conservarán las credenciales de Telegram."
 
     if [[ ! -s "$CONFIG_FILE" ]]; then
@@ -150,42 +146,28 @@ if [[ -f "$CONFIG_FILE" ]]; then
         exit 1
     fi
 
-    # Validar token.
-    if [[ "$(grep -Ec '^TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+$' "$CONFIG_FILE")" -ne 1 ]]; then
+    if [[ "$(grep -Ec '^TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+$' "$CONFIG_FILE" || true)" -ne 1 ]]; then
         echo "ERROR: token de Telegram incorrecto o duplicado."
         exit 1
     fi
 
-    # Validar Telegram ID.
-    if [[ "$(grep -Ec '^TELEGRAM_AUTHORIZED_USER_ID=[0-9]+$' "$CONFIG_FILE")" -ne 1 ]]; then
+    if [[ "$(grep -Ec '^TELEGRAM_AUTHORIZED_USER_ID=[0-9]+$' "$CONFIG_FILE" || true)" -ne 1 ]]; then
         echo "ERROR: Telegram User ID incorrecto o duplicado."
         exit 1
     fi
 
-    # Validar servidor.
-    if [[ "$(grep -Ec '^UPTERM_SERVER=wss://uptermd\.upterm\.dev$' "$CONFIG_FILE")" -ne 1 ]]; then
+    if [[ "$(grep -Ec '^UPTERM_SERVER=wss://uptermd\.upterm\.dev$' "$CONFIG_FILE" || true)" -ne 1 ]]; then
         echo "ERROR: servidor Upterm incorrecto o duplicado."
         exit 1
     fi
 
-    # Debe existir una cuenta autorizada principal.
-    if [[ "$(grep -Ec '^UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+$' "$CONFIG_FILE")" -ne 1 ]]; then
-        echo "ERROR: cuenta GitHub principal incorrecta o duplicada."
-        exit 1
-    fi
-
-    # La segunda cuenta es opcional en configuraciones antiguas.
-    if [[ "$(grep -Ec '^UPTERM_AUTHORIZED_USER_2=github:[A-Za-z0-9-]+$' "$CONFIG_FILE")" -gt 1 ]]; then
-        echo "ERROR: segunda cuenta GitHub duplicada."
-        exit 1
-    fi
-
-    # Rechazar variables y líneas adicionales.
+    # Permitir las antiguas variables GitHub solamente
+    # para poder eliminarlas durante esta actualización.
     if grep -Ev \
-        '^(TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+|TELEGRAM_AUTHORIZED_USER_ID=[0-9]+|UPTERM_SERVER=wss://uptermd\.upterm\.dev|UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+|UPTERM_AUTHORIZED_USER_2=github:[A-Za-z0-9-]+)$' \
+        '^(TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+|TELEGRAM_AUTHORIZED_USER_ID=[0-9]+|UPTERM_SERVER=wss://uptermd\.upterm\.dev|UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+|UPTERM_AUTHORIZED_USER_2=github:[A-Za-z0-9-]+|[[:space:]]*|[[:space:]]*#.*)$' \
         "$CONFIG_FILE" >/dev/null; then
 
-        echo "ERROR: bot.env contiene líneas no permitidas."
+        echo "ERROR: bot.env contiene variables no reconocidas."
         exit 1
     fi
 
@@ -223,11 +205,11 @@ if [[ ! "$TELEGRAM_ID" =~ ^[0-9]+$ ]]; then
 fi
 
 # ==========================================
-# CREAR CONFIGURACION CANONICA
+# GENERAR CONFIGURACION CANONICA
 # ==========================================
 
 echo
-echo "Configurando las dos cuentas GitHub autorizadas..."
+echo "Generando configuración sin autorización GitHub..."
 
 umask 077
 
@@ -236,9 +218,7 @@ TEMP_CONFIG="$(mktemp "${CONFIG_DIR}/.bot.env.XXXXXX")"
 {
     printf 'TELEGRAM_BOT_TOKEN=%s\n' "$BOT_TOKEN"
     printf 'TELEGRAM_AUTHORIZED_USER_ID=%s\n' "$TELEGRAM_ID"
-    printf 'UPTERM_SERVER=%s\n' "wss://uptermd.upterm.dev"
-    printf 'UPTERM_AUTHORIZED_USER=github:%s\n' "$GITHUB_USER_1"
-    printf 'UPTERM_AUTHORIZED_USER_2=github:%s\n' "$GITHUB_USER_2"
+    printf 'UPTERM_SERVER=%s\n' "$UPTERM_SERVER"
 } > "$TEMP_CONFIG"
 
 chown root:"$APP_GROUP" "$TEMP_CONFIG"
@@ -248,51 +228,31 @@ mv -fT -- "$TEMP_CONFIG" "$CONFIG_FILE"
 TEMP_CONFIG=""
 
 # ==========================================
-# CONFIGURAR CLAVE DEL RELAY
+# CONFIGURAR CONFIANZA SSH DE UPT​​ERM
 # ==========================================
 
 echo
-echo "Configurando clave de confianza del relay Upterm..."
+echo "Configurando confianza SSH de Upterm..."
 
 if [[ -L "$KNOWN_HOSTS" ]]; then
-    echo "ERROR: upterm_known_hosts no puede ser un enlace simbólico."
+    echo "ERROR: known_hosts no puede ser un enlace simbólico."
     exit 1
 fi
 
 if [[ -e "$KNOWN_HOSTS" && ! -f "$KNOWN_HOSTS" ]]; then
-    echo "ERROR: upterm_known_hosts no es un archivo regular."
+    echo "ERROR: known_hosts no es un archivo regular."
     exit 1
 fi
 
-TEMP_KNOWN_HOSTS="$(mktemp "${CONFIG_DIR}/.upterm_known_hosts.XXXXXX")"
+TEMP_KNOWN_HOSTS="$(mktemp "${SSH_DIR}/.known_hosts.XXXXXX")"
 
 printf '%s\n' "$UPTERM_KNOWN_HOSTS" > "$TEMP_KNOWN_HOSTS"
 
-chown root:"$APP_GROUP" "$TEMP_KNOWN_HOSTS"
-chmod 0640 "$TEMP_KNOWN_HOSTS"
+chown "$APP_USER":"$APP_GROUP" "$TEMP_KNOWN_HOSTS"
+chmod 0600 "$TEMP_KNOWN_HOSTS"
 
 mv -fT -- "$TEMP_KNOWN_HOSTS" "$KNOWN_HOSTS"
 TEMP_KNOWN_HOSTS=""
-
-# ==========================================
-# CONFIGURAR DIRECTORIO SSH
-# ==========================================
-
-if [[ -L "$SSH_DIR" ]]; then
-    echo "ERROR: el directorio .ssh no puede ser un enlace simbólico."
-    exit 1
-fi
-
-if [[ -e "$SSH_DIR" && ! -d "$SSH_DIR" ]]; then
-    echo "ERROR: .ssh no es un directorio."
-    exit 1
-fi
-
-install -d \
-    -o "$APP_USER" \
-    -g "$APP_GROUP" \
-    -m 0700 \
-    "$SSH_DIR"
 
 # ==========================================
 # PERMISOS FINALES
@@ -304,14 +264,14 @@ chmod 0750 "$CONFIG_DIR"
 chown root:"$APP_GROUP" "$CONFIG_FILE"
 chmod 0640 "$CONFIG_FILE"
 
-chown root:"$APP_GROUP" "$KNOWN_HOSTS"
-chmod 0640 "$KNOWN_HOSTS"
-
 chown "$APP_USER":"$APP_GROUP" "$STATE_DIR"
 chmod 0750 "$STATE_DIR"
 
 chown "$APP_USER":"$APP_GROUP" "$SSH_DIR"
 chmod 0700 "$SSH_DIR"
+
+chown "$APP_USER":"$APP_GROUP" "$KNOWN_HOSTS"
+chmod 0600 "$KNOWN_HOSTS"
 
 # ==========================================
 # RESULTADO
@@ -322,28 +282,25 @@ echo "=========================================="
 echo " SEGURIDAD CONFIGURADA"
 echo "=========================================="
 
-echo "Usuario del servicio: $APP_USER"
+echo "Usuario: $APP_USER"
 echo "Grupo: $APP_GROUP"
 echo "Configuración: $CONFIG_FILE"
-echo "Claves de confianza: $KNOWN_HOSTS"
+echo "Directorio de estado: $STATE_DIR"
 echo "Directorio SSH: $SSH_DIR"
+echo "Claves de confianza: $KNOWN_HOSTS"
 
 echo
-echo "Cuentas GitHub autorizadas:"
-echo " - github:$GITHUB_USER_1"
-echo " - github:$GITHUB_USER_2"
+echo "Autorización GitHub: desactivada"
+echo "Servidor Upterm: $UPTERM_SERVER"
+echo "SFTP/SCP: desactivado por la configuración del bot"
 
 echo
-echo "Permisos de credenciales:"
+echo "Permisos de configuración:"
 stat -c "%A %U:%G %n" "$CONFIG_FILE"
 
 echo
 echo "Permisos de known_hosts:"
 stat -c "%A %U:%G %n" "$KNOWN_HOSTS"
-
-echo
-echo "Huella oficial documentada:"
-echo "$EXPECTED_FINGERPRINT"
 
 echo
 echo "Configuración de seguridad terminada."
