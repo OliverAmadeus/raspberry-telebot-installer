@@ -13,6 +13,26 @@ CONFIG_DIR="/etc/raspberry-telebot-installer"
 SERVICE_TELEGRAM="telegram-bot.service"
 SERVICE_UPTERM="upterm.service"
 
+SERVICES=(
+    "$SERVICE_TELEGRAM"
+    "$SERVICE_UPTERM"
+)
+
+# ==========================================
+# MANEJO DE ERRORES
+# ==========================================
+
+error_handler() {
+    local exit_code=$?
+    echo
+    echo "ERROR: la instalación terminó inesperadamente."
+    echo "Código de salida: $exit_code"
+    echo "Revisa los registros de instalación y systemd."
+    exit "$exit_code"
+}
+
+trap error_handler ERR
+
 # ==========================================
 # COMPROBAR ROOT
 # ==========================================
@@ -62,15 +82,12 @@ done
 # COMPROBAR SISTEMA
 # ==========================================
 
-if ! command -v apt-get >/dev/null 2>&1; then
-    echo "ERROR: se requiere Debian o Ubuntu."
-    exit 1
-fi
-
-if ! command -v dpkg >/dev/null 2>&1; then
-    echo "ERROR: no se encontró dpkg."
-    exit 1
-fi
+for command in apt-get dpkg systemctl realpath install cp; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "ERROR: no se encontró el comando $command."
+        exit 1
+    fi
+done
 
 ARCH="$(dpkg --print-architecture)"
 
@@ -79,9 +96,8 @@ if [[ "$ARCH" != "arm64" && "$ARCH" != "amd64" ]]; then
     exit 1
 fi
 
-if ! command -v systemctl >/dev/null 2>&1; then
-    echo "ERROR: systemd no está disponible."
-    exit 1
+if ! systemctl is-system-running >/dev/null 2>&1; then
+    echo "AVISO: systemd no informa un estado completamente operativo."
 fi
 
 # ==========================================
@@ -140,13 +156,11 @@ bash "$APP_DIR/scripts/configure_security.sh"
 echo
 echo "[5/7] Instalando servicios..."
 
-install -m 0644 \
-    "$APP_DIR/systemd/telegram-bot.service" \
-    "/etc/systemd/system/$SERVICE_TELEGRAM"
-
-install -m 0644 \
-    "$APP_DIR/systemd/upterm.service" \
-    "/etc/systemd/system/$SERVICE_UPTERM"
+for service in "${SERVICES[@]}"; do
+    install -m 0644 \
+        "$APP_DIR/systemd/$service" \
+        "/etc/systemd/system/$service"
+done
 
 systemctl daemon-reload
 
@@ -157,15 +171,9 @@ systemctl daemon-reload
 echo
 echo "Validando configuración de systemd..."
 
-if ! systemd-analyze verify \
+systemd-analyze verify \
     "/etc/systemd/system/$SERVICE_TELEGRAM" \
-    "/etc/systemd/system/$SERVICE_UPTERM"; then
-
-    echo
-    echo "ERROR: systemd detectó problemas."
-    echo "No se iniciarán los servicios."
-    exit 1
-fi
+    "/etc/systemd/system/$SERVICE_UPTERM"
 
 echo "Configuración de systemd válida."
 
@@ -176,8 +184,10 @@ echo "Configuración de systemd válida."
 echo
 echo "[6/7] Habilitando inicio automático..."
 
-systemctl enable "$SERVICE_TELEGRAM"
-systemctl enable "$SERVICE_UPTERM"
+for service in "${SERVICES[@]}"; do
+    systemctl enable "$service"
+    systemctl reset-failed "$service" || true
+done
 
 # ==========================================
 # INICIAR SERVICIOS
@@ -186,21 +196,30 @@ systemctl enable "$SERVICE_UPTERM"
 echo
 echo "[7/7] Iniciando servicios..."
 
-for service in "$SERVICE_TELEGRAM" "$SERVICE_UPTERM"; do
+for service in "${SERVICES[@]}"; do
 
-    systemctl reset-failed "$service" || true
+    echo
+    echo "Iniciando $service..."
 
-    if systemctl is-active --quiet "$service"; then
-        systemctl restart "$service"
-    else
+    systemctl restart "$service" 2>/dev/null || \
         systemctl start "$service"
+
+    if ! systemctl is-active --quiet "$service"; then
+        echo "ERROR: $service no está activo."
+        systemctl --no-pager --full status "$service" || true
+        journalctl -u "$service" -n 40 --no-pager || true
+        exit 1
     fi
+
+    echo "$service: ACTIVO"
 
 done
 
 # ==========================================
 # RESULTADO
 # ==========================================
+
+trap - ERR
 
 echo
 echo "=========================================="
@@ -209,21 +228,21 @@ echo "=========================================="
 
 echo
 echo "Bot Telegram:"
-systemctl --no-pager --full status "$SERVICE_TELEGRAM" || true
+systemctl --no-pager --full status "$SERVICE_TELEGRAM"
 
 echo
 echo "Upterm:"
-systemctl --no-pager --full status "$SERVICE_UPTERM" || true
+systemctl --no-pager --full status "$SERVICE_UPTERM"
 
 echo
 echo "Directorio: $APP_DIR"
 echo "Configuración: $CONFIG_DIR/bot.env"
 
 echo
-echo "Para consultar los registros:"
+echo "Registros:"
 echo "sudo journalctl -u telegram-bot.service -f"
 echo "sudo journalctl -u upterm.service -f"
 
 echo
-echo "La Raspberry está configurada para iniciar"
-echo "ambos servicios automáticamente."
+echo "Ambos servicios están activos y habilitados"
+echo "para iniciar automáticamente con la Raspberry Pi."
