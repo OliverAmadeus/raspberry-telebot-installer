@@ -1,23 +1,89 @@
 
 import asyncio
 import os
+import shlex
+import signal
 from pathlib import Path
 
-# Directorio inicial de trabajo
+
+# ==========================================
+# CONFIGURACION
+# ==========================================
+
 HOME_DIR = str(Path.home())
 
-# Directorio de trabajo independiente de cada sesión
+COMMAND_TIMEOUT = 120
+MAX_OUTPUT_SIZE = 1024 * 1024  # 1 MiB por comando
+
+# Directorio independiente por usuario Telegram
 working_directories = {}
 
+
+# ==========================================
+# DIRECTORIO ACTUAL
+# ==========================================
 
 def get_working_directory(user_id):
     return working_directories.get(user_id, HOME_DIR)
 
 
+# ==========================================
+# CAMBIAR DIRECTORIO
+# ==========================================
+
+def change_directory(user_id, command):
+    try:
+        arguments = shlex.split(command)
+
+        if len(arguments) > 2:
+            return "Uso: cd [directorio]"
+
+        destination = arguments[1] if len(arguments) == 2 else HOME_DIR
+
+        current_dir = get_working_directory(user_id)
+
+        if destination == "~":
+            destination = HOME_DIR
+
+        elif destination.startswith("~/"):
+            destination = os.path.join(
+                HOME_DIR,
+                destination[2:]
+            )
+
+        elif not os.path.isabs(destination):
+            destination = os.path.join(
+                current_dir,
+                destination
+            )
+
+        destination = os.path.abspath(destination)
+
+        if not os.path.isdir(destination):
+            return f"No existe el directorio:\n{destination}"
+
+        working_directories[user_id] = destination
+
+        return f"Directorio cambiado a:\n{destination}"
+
+    except ValueError:
+        return "Error: formato de directorio no válido."
+
+
+# ==========================================
+# EJECUTAR COMANDO
+# ==========================================
+
 async def execute_command(user_id, command):
     """
     Ejecuta comandos Linux mediante Bash.
-    Cada usuario conserva su propio directorio de trabajo.
+
+    Características:
+    - Comandos arbitrarios.
+    - Directorio persistente por usuario.
+    - Tiempo máximo de ejecución.
+    - Límite de salida.
+    - Terminación del grupo de procesos.
     """
 
     command = command.strip()
@@ -27,48 +93,92 @@ async def execute_command(user_id, command):
 
     current_dir = get_working_directory(user_id)
 
-    # Cambio de directorio persistente
-    if command == "cd":
+    # ======================================
+    # PROCESAR CD
+    # ======================================
+
+    if command == "cd" or command.startswith("cd "):
+        return change_directory(user_id, command)
+
+    # ======================================
+    # VALIDAR DIRECTORIO
+    # ======================================
+
+    if not os.path.isdir(current_dir):
+        current_dir = HOME_DIR
         working_directories[user_id] = HOME_DIR
-        return f"Directorio: {HOME_DIR}"
 
-    if command.startswith("cd "):
-        destination = command[3:].strip()
+    # ======================================
+    # CREAR PROCESO
+    # ======================================
 
-        if destination == "~":
-            destination = HOME_DIR
-        elif destination.startswith("~/"):
-            destination = os.path.join(HOME_DIR, destination[2:])
-        elif not os.path.isabs(destination):
-            destination = os.path.join(current_dir, destination)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "/bin/bash",
+            "-lc",
+            command,
+            cwd=current_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True
+        )
 
-        destination = os.path.abspath(destination)
+    except Exception as error:
+        return f"No se pudo iniciar el comando: {error}"
 
-        if os.path.isdir(destination):
-            working_directories[user_id] = destination
-            return f"Directorio cambiado a:\n{destination}"
-
-        return f"No existe el directorio:\n{destination}"
-
-    # Ejecutar comando con Bash
-    process = await asyncio.create_subprocess_exec(
-        "/bin/bash",
-        "-lc",
-        command,
-        cwd=current_dir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    # ======================================
+    # CONTROLAR TIEMPO Y SALIDA
+    # ======================================
 
     try:
         stdout, stderr = await asyncio.wait_for(
             process.communicate(),
-            timeout=120
+            timeout=COMMAND_TIMEOUT
         )
+
     except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
-        return "El comando superó el límite de 120 segundos."
+
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+
+            await asyncio.wait_for(
+                process.wait(),
+                timeout=5
+            )
+
+        except asyncio.TimeoutError:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+            await process.wait()
+
+        except ProcessLookupError:
+            pass
+
+        return (
+            f"El comando superó el límite de "
+            f"{COMMAND_TIMEOUT} segundos."
+        )
+
+    # ======================================
+    # CONTROLAR TAMAÑO DE SALIDA
+    # ======================================
+
+    truncated = False
+
+    if len(stdout) > MAX_OUTPUT_SIZE:
+        stdout = stdout[:MAX_OUTPUT_SIZE]
+        truncated = True
+
+    if len(stderr) > MAX_OUTPUT_SIZE:
+        stderr = stderr[:MAX_OUTPUT_SIZE]
+        truncated = True
+
+    # ======================================
+    # PREPARAR RESULTADO
+    # ======================================
 
     output = stdout.decode(errors="replace").strip()
     errors = stderr.decode(errors="replace").strip()
@@ -78,7 +188,16 @@ async def execute_command(user_id, command):
     if errors:
         result += ("\n" if result else "") + errors
 
+    if truncated:
+        result += (
+            "\n\n[Salida truncada: se alcanzó el límite "
+            "de 1 MiB por canal.]"
+        )
+
     if not result:
-        result = f"Comando finalizado. Código de salida: {process.returncode}"
+        result = (
+            f"Comando finalizado. "
+            f"Código de salida: {process.returncode}"
+        )
 
     return result
