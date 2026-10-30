@@ -1,0 +1,17 @@
+# Credenciales y configuración privada
+.env
+*.env
+!config/bot.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Registros
+*.log
+
+# Archivos temporales de Upterm
+upterm_session.json
+*.session
