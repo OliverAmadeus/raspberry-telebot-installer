@@ -1,17 +1,64 @@
-# Credenciales y configuración privada
+
+# ==========================================
+# CREDENCIALES Y CONFIGURACION PRIVADA
+# ==========================================
+
 .env
+.env.*
 *.env
 !config/bot.env.example
 
-# Python
+# Claves y configuracion SSH
+.ssh/
+**/.ssh/
+id_rsa
+id_ed25519
+id_ecdsa
+*.pem
+*.key
+known_hosts
+known_hosts.*
+
+# ==========================================
+# PYTHON
+# ==========================================
+
 __pycache__/
 *.py[cod]
+*.pyo
 .venv/
 venv/
+env/
 
-# Registros
+# ==========================================
+# REGISTROS
+# ==========================================
+
 *.log
+logs/
 
-# Archivos temporales de Upterm
+# ==========================================
+# UPT​​ERM Y ESTADO LOCAL
+# ==========================================
+
 upterm_session.json
 *.session
+upterm_*.json
+
+# ==========================================
+# ARCHIVOS TEMPORALES
+# ==========================================
+
+*.tmp
+*.bak
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# CONFIGURACION LOCAL
+# ==========================================
+
+config/bot.env
+config/*.local
