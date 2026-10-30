@@ -27,9 +27,12 @@ fi
 # ==========================================
 
 echo
-echo "Instalando dependencias del sistema..."
+echo "Actualizando índices de paquetes..."
 
 apt-get update
+
+echo
+echo "Instalando dependencias del sistema..."
 
 apt-get install -y \
     git \
@@ -38,7 +41,19 @@ apt-get install -y \
     python3 \
     python3-venv \
     python3-pip \
-    tar
+    tar \
+    rsync
+
+# ==========================================
+# VERIFICAR RSYNC
+# ==========================================
+
+if ! command -v rsync >/dev/null 2>&1; then
+    echo "ERROR: rsync no quedó instalado correctamente."
+    exit 1
+fi
+
+echo "rsync: $(rsync --version | head -n 1)"
 
 # ==========================================
 # DETECTAR ARQUITECTURA
@@ -118,7 +133,14 @@ def download(url, destination):
         request,
         timeout=120,
     ) as response:
-        destination.write_bytes(response.read())
+        with destination.open("wb") as output:
+            while True:
+                chunk = response.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                output.write(chunk)
 
 
 # ==========================================
@@ -212,9 +234,16 @@ if not expected_hash or not re.fullmatch(
         "ERROR: SHA256 no válido o inexistente."
     )
 
-actual_hash = hashlib.sha256(
-    archive.read_bytes()
-).hexdigest()
+hasher = hashlib.sha256()
+
+with archive.open("rb") as source:
+    for chunk in iter(
+        lambda: source.read(1024 * 1024),
+        b"",
+    ):
+        hasher.update(chunk)
+
+actual_hash = hasher.hexdigest()
 
 if actual_hash.lower() != expected_hash.lower():
     raise SystemExit(
@@ -339,17 +368,17 @@ echo "=========================================="
 echo " VERIFICACION"
 echo "=========================================="
 
+if [[ ! -x "$UPTERM_INSTALL" ]]; then
+    echo "ERROR: Upterm no tiene permisos de ejecución."
+    exit 1
+fi
+
 VERSION_OUTPUT="$("$UPTERM_INSTALL" version)"
 
 echo "$VERSION_OUTPUT"
 
 if [[ "$VERSION_OUTPUT" != *"$UPTERM_VERSION"* ]]; then
     echo "ERROR: la versión instalada no coincide."
-    exit 1
-fi
-
-if [[ ! -x "$UPTERM_INSTALL" ]]; then
-    echo "ERROR: Upterm no tiene permisos de ejecución."
     exit 1
 fi
 
@@ -362,6 +391,7 @@ echo "=========================================="
 echo " DEPENDENCIAS INSTALADAS"
 echo "=========================================="
 
+echo "rsync: instalado"
 echo "Upterm: $UPTERM_VERSION"
 echo "Arquitectura: $UPTERM_ARCH"
 echo "Ejecutable: $UPTERM_INSTALL"
