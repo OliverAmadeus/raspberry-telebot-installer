@@ -6,29 +6,38 @@ After=network-online.target
 
 [Service]
 Type=simple
+
 User=raspberry-telebot
 Group=raspberry-telebot
 
 WorkingDirectory=/opt/raspberry-telebot-installer/bot
+
 Environment=HOME=/var/lib/raspberry-telebot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
+
 EnvironmentFile=/etc/raspberry-telebot-installer/bot.env
 
 ExecStart=/opt/raspberry-telebot-installer/venv/bin/python /opt/raspberry-telebot-installer/bot/bot.py
 
 Restart=on-failure
 RestartSec=10
+
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
+ProtectHome=true
 RestrictSUIDSGID=true
 LockPersonality=true
+UMask=0077
 
 StateDirectory=raspberry-telebot
 StateDirectoryMode=0750
+
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target
