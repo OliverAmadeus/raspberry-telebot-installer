@@ -2,6 +2,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# ==========================================
+# INSTALADOR DE DEPENDENCIAS
+# ==========================================
+
+UPTERM_VERSION="v0.40.0"
+
 echo "======================================"
 echo " INSTALADOR DE DEPENDENCIAS"
 echo "======================================"
@@ -14,6 +20,9 @@ fi
 # ==========================================
 # DEPENDENCIAS DEL SISTEMA
 # ==========================================
+
+echo
+echo "Instalando dependencias del sistema..."
 
 apt-get update
 
@@ -46,43 +55,69 @@ case "$ARCH" in
 esac
 
 echo "Arquitectura: $ARCH"
+echo "Upterm: $UPTERM_VERSION"
 
 # ==========================================
-# DESCARGAR UPT​ERM CLI OFICIAL
+# DIRECTORIO TEMPORAL
 # ==========================================
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-python3 - "$UPTERM_ARCH" "$TMP_DIR" <<'PY'
+# ==========================================
+# DESCARGAR Y VERIFICAR UPT​ERM
+# ==========================================
+
+python3 - "$UPTERM_VERSION" "$UPTERM_ARCH" "$TMP_DIR" <<'PY'
 import hashlib
 import json
 import pathlib
+import re
 import sys
+import tarfile
 import urllib.request
 
-arch = sys.argv[1]
-directory = pathlib.Path(sys.argv[2])
+version = sys.argv[1]
+arch = sys.argv[2]
+directory = pathlib.Path(sys.argv[3])
 
-api = "https://api.github.com/repos/owenthereal/upterm/releases/latest"
+api = (
+    "https://api.github.com/repos/owenthereal/upterm"
+    f"/releases/tags/{version}"
+)
 
 def download(url, destination):
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "raspberry-telebot-installer"}
+        headers={
+            "User-Agent": "raspberry-telebot-installer"
+        }
     )
 
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(
+        request,
+        timeout=120
+    ) as response:
         destination.write_bytes(response.read())
 
 
+# Obtener versión exacta
+
 request = urllib.request.Request(
     api,
-    headers={"User-Agent": "raspberry-telebot-installer"}
+    headers={
+        "User-Agent": "raspberry-telebot-installer"
+    }
 )
 
-with urllib.request.urlopen(request, timeout=30) as response:
+with urllib.request.urlopen(
+    request,
+    timeout=30
+) as response:
     release = json.load(response)
+
+if release.get("tag_name") != version:
+    raise SystemExit("ERROR: versión de Upterm inesperada.")
 
 assets = {
     item["name"]: item
@@ -93,11 +128,15 @@ archive_name = f"upterm_linux_{arch}.tar.gz"
 
 if archive_name not in assets:
     raise SystemExit(
-        f"No se encontró el paquete oficial: {archive_name}"
+        f"No existe el paquete oficial: {archive_name}"
     )
 
 if "checksums.txt" not in assets:
-    raise SystemExit("No se encontró checksums.txt.")
+    raise SystemExit(
+        "No se encontró checksums.txt."
+    )
+
+# Descargar archivos oficiales
 
 archive = directory / archive_name
 checksums = directory / "checksums.txt"
@@ -112,6 +151,8 @@ download(
     checksums
 )
 
+# Buscar SHA256
+
 expected = None
 
 for line in checksums.read_text().splitlines():
@@ -124,45 +165,73 @@ for line in checksums.read_text().splitlines():
             expected = parts[0]
             break
 
-if not expected:
-    raise SystemExit("No se encontró el SHA256 del paquete.")
+if not expected or not re.fullmatch(
+    r"[a-fA-F0-9]{64}",
+    expected
+):
+    raise SystemExit(
+        "ERROR: SHA256 no válido o inexistente."
+    )
+
+# Verificar integridad
 
 actual = hashlib.sha256(
     archive.read_bytes()
 ).hexdigest()
 
 if actual.lower() != expected.lower():
-    raise SystemExit("ERROR: la verificación SHA256 falló.")
+    raise SystemExit(
+        "ERROR: la verificación SHA256 falló."
+    )
 
-print(f"Versión: {release['tag_name']}")
+print(f"Versión: {version}")
 print("SHA256 verificado correctamente.")
+
+# Inspeccionar el archivo sin extraer rutas arbitrarias
+
+with tarfile.open(archive, "r:gz") as tar:
+    candidates = [
+        member
+        for member in tar.getmembers()
+        if pathlib.PurePosixPath(member.name).name == "upterm"
+        and member.isfile()
+    ]
+
+    if len(candidates) != 1:
+        raise SystemExit(
+            "ERROR: el archivo no contiene un único "
+            "ejecutable Upterm válido."
+        )
+
+    binary = tar.extractfile(candidates[0])
+
+    if binary is None:
+        raise SystemExit(
+            "ERROR: no se pudo leer el ejecutable."
+        )
+
+    binary_path = directory / "upterm"
+    binary_path.write_bytes(binary.read())
+
+if binary_path.stat().st_size == 0:
+    raise SystemExit(
+        "ERROR: el ejecutable descargado está vacío."
+    )
+
+print("Ejecutable Upterm extraído y validado.")
+
 PY
 
 # ==========================================
-# EXTRAER E INSTALAR UPT​ERM
+# INSTALAR UPT​ERM
 # ==========================================
 
 echo
 echo "Instalando Upterm CLI..."
 
-tar -xzf \
-    "$TMP_DIR/upterm_linux_${UPTERM_ARCH}.tar.gz" \
-    -C "$TMP_DIR"
-
-UPTERM_BIN="$(
-    find "$TMP_DIR" \
-        -type f \
-        -name upterm \
-        -print \
-        -quit
-)"
-
-if [[ -z "$UPTERM_BIN" ]]; then
-    echo "ERROR: no se encontró el ejecutable upterm."
-    exit 1
-fi
-
-install -m 0755 "$UPTERM_BIN" /usr/local/bin/upterm
+install -m 0755 \
+    "$TMP_DIR/upterm" \
+    /usr/local/bin/upterm
 
 # ==========================================
 # VERIFICAR INSTALACION
@@ -177,5 +246,10 @@ echo "======================================"
 
 echo
 echo "Upterm CLI instalado correctamente."
+echo "Versión: $UPTERM_VERSION"
+echo "Arquitectura: $UPTERM_ARCH"
 echo "Ejecutable: /usr/local/bin/upterm"
 echo "Relay: wss://uptermd.upterm.dev"
+
+echo
+echo "Instalación de dependencias terminada."
