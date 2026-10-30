@@ -493,4 +493,3 @@ async def execute_command(user_id, command):
         )
 
     return result
-
