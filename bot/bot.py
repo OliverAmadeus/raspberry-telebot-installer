@@ -16,7 +16,10 @@ from terminal import execute_command, get_working_directory
 # CONFIGURACION
 # ==========================================
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN", ""
+).strip()
+
 AUTHORIZED_USER_ID = os.getenv(
     "TELEGRAM_AUTHORIZED_USER_ID", ""
 ).strip()
@@ -67,7 +70,10 @@ def authorized(update: Update) -> bool:
 # ==========================================
 
 async def send_long_message(update: Update, text: str):
-    """Divide respuestas para respetar el límite de Telegram."""
+    """
+    Divide respuestas respetando el límite
+    de longitud UTF-16 de Telegram.
+    """
 
     if not update.message:
         return
@@ -75,12 +81,27 @@ async def send_long_message(update: Update, text: str):
     if not text:
         text = "(Sin salida)"
 
-    max_length = 4000
+    max_length = 3500
+    chunk = ""
+    current_length = 0
 
-    for position in range(0, len(text), max_length):
-        await update.message.reply_text(
-            text[position:position + max_length]
-        )
+    for character in text:
+
+        char_length = len(
+            character.encode("utf-16-le")
+        ) // 2
+
+        if current_length + char_length > max_length:
+            await update.message.reply_text(chunk)
+
+            chunk = ""
+            current_length = 0
+
+        chunk += character
+        current_length += char_length
+
+    if chunk:
+        await update.message.reply_text(chunk)
 
 
 # ==========================================
@@ -91,6 +112,7 @@ async def start_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not authorized(update):
         return
 
@@ -111,6 +133,7 @@ async def help_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not authorized(update):
         return
 
@@ -139,6 +162,7 @@ async def pwd_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not authorized(update):
         return
 
@@ -157,6 +181,7 @@ async def terminal_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not authorized(update):
         return
 
@@ -164,7 +189,14 @@ async def terminal_handler(
         return
 
     message = update.message.text or ""
-    command = message.partition(" ")[2].strip()
+
+    parts = message.split(maxsplit=1)
+
+    command = (
+        parts[1].strip()
+        if len(parts) > 1
+        else ""
+    )
 
     if not command:
         await update.message.reply_text(
@@ -180,12 +212,22 @@ async def terminal_handler(
     )
 
     try:
-        result = await execute_command(user_id, command)
 
-        await send_long_message(update, result)
+        result = await execute_command(
+            user_id,
+            command
+        )
+
+        await send_long_message(
+            update,
+            result
+        )
 
     except Exception:
-        logger.exception("Error ejecutando comando")
+
+        logger.exception(
+            "Error ejecutando comando"
+        )
 
         await update.message.reply_text(
             "Se produjo un error al ejecutar el comando."
@@ -230,10 +272,16 @@ def main():
         CommandHandler("terminal", terminal_handler)
     )
 
-    logger.info("Raspberry Telebot iniciado.")
+    logger.info(
+        "Raspberry Telebot iniciado."
+    )
 
     application.run_polling()
 
+
+# ==========================================
+# EJECUCION
+# ==========================================
 
 if __name__ == "__main__":
     main()
