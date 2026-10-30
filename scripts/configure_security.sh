@@ -13,6 +13,14 @@ CONFIG_DIR="/etc/raspberry-telebot-installer"
 CONFIG_FILE="${CONFIG_DIR}/bot.env"
 
 STATE_DIR="/var/lib/raspberry-telebot"
+SSH_DIR="${STATE_DIR}/.ssh"
+KNOWN_HOSTS="${SSH_DIR}/known_hosts"
+
+# Clave oficial publicada por el proyecto Upterm
+UPTERM_KNOWN_HOSTS='
+@cert-authority uptermd.upterm.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
+@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
+'
 
 # ==========================================
 # VALIDAR PERMISOS
@@ -33,13 +41,10 @@ echo "=========================================="
 
 if ! getent group "$APP_GROUP" >/dev/null; then
     groupadd --system "$APP_GROUP"
-    echo "Grupo creado: $APP_GROUP"
-else
-    echo "Grupo existente: $APP_GROUP"
 fi
 
 # ==========================================
-# CREAR USUARIO DE SERVICIO
+# CREAR USUARIO
 # ==========================================
 
 if ! id "$APP_USER" >/dev/null 2>&1; then
@@ -50,10 +55,6 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
         --no-create-home \
         --shell /usr/sbin/nologin \
         "$APP_USER"
-
-    echo "Usuario creado: $APP_USER"
-else
-    echo "Usuario existente: $APP_USER"
 fi
 
 # ==========================================
@@ -76,11 +77,8 @@ install -d \
 # CONFIGURAR CREDENCIALES
 # ==========================================
 
-if [[ -f "$CONFIG_FILE" ]]; then
-    echo
-    echo "Ya existe una configuración."
-    echo "No se sobrescribirán las credenciales."
-else
+if [[ ! -f "$CONFIG_FILE" ]]; then
+
     echo
     echo "CONFIGURACION DE TELEGRAM"
     echo "------------------------------------------"
@@ -98,23 +96,21 @@ else
 
     GITHUB_USER="${GITHUB_USER:-KaworuSSSS}"
 
-    # Validar datos
     if [[ -z "$BOT_TOKEN" ]]; then
-        echo "ERROR: el token no puede estar vacío."
+        echo "ERROR: token vacío."
         exit 1
     fi
 
     if [[ ! "$TELEGRAM_ID" =~ ^[0-9]+$ ]]; then
-        echo "ERROR: el Telegram User ID debe ser numérico."
+        echo "ERROR: Telegram User ID no válido."
         exit 1
     fi
 
     if [[ ! "$GITHUB_USER" =~ ^[A-Za-z0-9-]+$ ]]; then
-        echo "ERROR: nombre de GitHub no válido."
+        echo "ERROR: usuario GitHub no válido."
         exit 1
     fi
 
-    # Crear archivo privado
     umask 027
 
     {
@@ -129,12 +125,31 @@ else
 
     unset BOT_TOKEN
 
-    echo
-    echo "Credenciales guardadas correctamente."
+    echo "Credenciales creadas."
+else
+    echo "Configuración existente: se conserva."
 fi
 
 # ==========================================
-# VERIFICAR PERMISOS
+# INSTALAR CLAVE DEL RELAY
+# ==========================================
+
+echo
+echo "Configurando clave oficial del relay Upterm..."
+
+install -d \
+    -o "$APP_USER" \
+    -g "$APP_GROUP" \
+    -m 0700 \
+    "$SSH_DIR"
+
+printf '%s\n' "$UPTERM_KNOWN_HOSTS" > "$KNOWN_HOSTS"
+
+chown "$APP_USER":"$APP_GROUP" "$KNOWN_HOSTS"
+chmod 0600 "$KNOWN_HOSTS"
+
+# ==========================================
+# PERMISOS FINALES
 # ==========================================
 
 chown root:"$APP_GROUP" "$CONFIG_DIR"
@@ -149,10 +164,20 @@ echo " SEGURIDAD CONFIGURADA"
 echo "=========================================="
 
 echo "Usuario: $APP_USER"
-echo "Grupo: $APP_GROUP"
 echo "Configuración: $CONFIG_FILE"
-echo "Estado: $STATE_DIR"
+echo "Claves verificadas: $KNOWN_HOSTS"
 
 echo
-echo "Permisos del archivo:"
-stat -c "%A %U:%G %n" "$CONFIG_FILE" 2>/dev/null || true
+echo "Permisos de credenciales:"
+stat -c "%A %U:%G %n" "$CONFIG_FILE"
+
+echo
+echo "Permisos de known_hosts:"
+stat -c "%A %U:%G %n" "$KNOWN_HOSTS"
+
+echo
+echo "Huella oficial documentada:"
+echo "SHA256:9ajV8JqMe6jJE/s3TYjb/9xw7T0pfJ2+gADiBIJWDPE"
+
+echo
+echo "Configuración de seguridad terminada."
