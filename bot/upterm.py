@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 # ==========================================
-# CONFIGURACIÓN
+# CONFIGURACION
 # ==========================================
 
 UPTERM_SERVER = os.getenv(
@@ -19,13 +19,14 @@ UPTERM_AUTHORIZED_USER = os.getenv(
     "github:KaworuSSSS"
 ).strip()
 
+KNOWN_HOSTS = Path.home() / ".ssh" / "known_hosts"
+
 
 # ==========================================
 # LOCALIZAR UPT​ERM
 # ==========================================
 
 def find_upterm():
-    """Localiza el ejecutable de Upterm."""
 
     executable = shutil.which("upterm")
 
@@ -33,9 +34,9 @@ def find_upterm():
         return executable
 
     possible_paths = [
-        Path.home() / "go/bin/upterm",
         Path("/usr/local/bin/upterm"),
         Path("/usr/bin/upterm"),
+        Path.home() / "go/bin/upterm",
     ]
 
     for path in possible_paths:
@@ -43,33 +44,36 @@ def find_upterm():
             return str(path)
 
     raise FileNotFoundError(
-        "No se encontró Upterm. "
-        "Ejecuta primero el instalador."
+        "No se encontró el ejecutable Upterm."
     )
 
 
 # ==========================================
-# VALIDAR CONFIGURACIÓN
+# VALIDAR CONFIGURACION
 # ==========================================
 
 def validate_configuration():
 
     if not UPTERM_SERVER.startswith("wss://"):
         raise ValueError(
-            "El servidor debe utilizar una conexión WSS."
+            "El servidor debe utilizar WSS."
         )
 
     if not UPTERM_AUTHORIZED_USER.startswith("github:"):
         raise ValueError(
-            "UPTERM_AUTHORIZED_USER debe tener "
-            "el formato github:usuario."
+            "La autorización debe tener formato github:usuario."
         )
 
     username = UPTERM_AUTHORIZED_USER.split(":", 1)[1]
 
     if not username or "/" in username:
         raise ValueError(
-            "La cuenta GitHub configurada no es válida."
+            "El usuario GitHub configurado no es válido."
+        )
+
+    if not KNOWN_HOSTS.is_file():
+        raise FileNotFoundError(
+            f"No existe el archivo de claves verificadas: {KNOWN_HOSTS}"
         )
 
 
@@ -90,6 +94,8 @@ def main():
         UPTERM_SERVER,
         "--authorized-user",
         UPTERM_AUTHORIZED_USER,
+        "--known-hosts",
+        str(KNOWN_HOSTS),
         "--accept",
         "--no-sftp",
         "--",
@@ -104,15 +110,16 @@ def main():
     print(f"Ejecutable: {executable}")
     print(f"Servidor: {UPTERM_SERVER}")
     print(f"Usuario autorizado: {UPTERM_AUTHORIZED_USER}")
-    print("Transferencia SFTP: desactivada")
+    print(f"Claves verificadas: {KNOWN_HOSTS}")
+    print("SFTP/SCP: desactivado")
     print("Acceso interactivo: habilitado")
-    print("Iniciando sesión remota...")
+    print("Iniciando terminal remota...")
 
     os.execv(executable, command)
 
 
 # ==========================================
-# EJECUCIÓN
+# EJECUCION
 # ==========================================
 
 if __name__ == "__main__":
