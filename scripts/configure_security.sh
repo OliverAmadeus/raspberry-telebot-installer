@@ -14,25 +14,35 @@ CONFIG_FILE="${CONFIG_DIR}/bot.env"
 
 STATE_DIR="/var/lib/raspberry-telebot"
 SSH_DIR="${STATE_DIR}/.ssh"
-KNOWN_HOSTS="${SSH_DIR}/known_hosts"
+
+# Archivo de confianza SSH protegido por root.
+KNOWN_HOSTS="${CONFIG_DIR}/upterm_known_hosts"
 
 TEMP_CONFIG=""
+TEMP_KNOWN_HOSTS=""
 
-# Clave oficial publicada por el proyecto Upterm
+# Clave oficial publicada por el proyecto Upterm.
 UPTERM_KNOWN_HOSTS='
 @cert-authority uptermd.upterm.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
 @cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
 '
+
+EXPECTED_FINGERPRINT="SHA256:9ajV8JqMe6jJE/s3TYjb/9xw7T0pfJ2+gADiBIJWDPE"
 
 # ==========================================
 # LIMPIEZA
 # ==========================================
 
 cleanup() {
+
     unset BOT_TOKEN TELEGRAM_ID GITHUB_USER
 
     if [[ -n "$TEMP_CONFIG" && -f "$TEMP_CONFIG" ]]; then
         rm -f -- "$TEMP_CONFIG"
+    fi
+
+    if [[ -n "$TEMP_KNOWN_HOSTS" && -f "$TEMP_KNOWN_HOSTS" ]]; then
+        rm -f -- "$TEMP_KNOWN_HOSTS"
     fi
 }
 
@@ -52,6 +62,20 @@ echo " CONFIGURANDO SEGURIDAD"
 echo "=========================================="
 
 # ==========================================
+# VALIDAR RUTAS
+# ==========================================
+
+if [[ -L "$CONFIG_DIR" ]]; then
+    echo "ERROR: el directorio de configuración no puede ser un enlace simbólico."
+    exit 1
+fi
+
+if [[ -L "$STATE_DIR" ]]; then
+    echo "ERROR: el directorio de estado no puede ser un enlace simbólico."
+    exit 1
+fi
+
+# ==========================================
 # CREAR GRUPO
 # ==========================================
 
@@ -64,6 +88,7 @@ fi
 # ==========================================
 
 if ! id "$APP_USER" >/dev/null 2>&1; then
+
     useradd \
         --system \
         --gid "$APP_GROUP" \
@@ -71,6 +96,7 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
         --no-create-home \
         --shell /usr/sbin/nologin \
         "$APP_USER"
+
 fi
 
 USER_GROUP="$(id -gn "$APP_USER")"
@@ -97,7 +123,7 @@ install -d \
     "$STATE_DIR"
 
 # ==========================================
-# VALIDAR ARCHIVO EXISTENTE
+# VALIDAR ARCHIVO DE CONFIGURACION
 # ==========================================
 
 if [[ -L "$CONFIG_FILE" ]]; then
@@ -137,28 +163,28 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
     GITHUB_USER="${GITHUB_USER:-KaworuSSSS}"
 
-    # Validar token
+    # Validar token.
 
     if [[ ! "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
         echo "ERROR: formato del token de Telegram no válido."
         exit 1
     fi
 
-    # Validar Telegram ID
+    # Validar Telegram ID.
 
     if [[ ! "$TELEGRAM_ID" =~ ^[0-9]+$ ]]; then
         echo "ERROR: Telegram User ID no válido."
         exit 1
     fi
 
-    # Validar GitHub
+    # Validar usuario GitHub.
 
     if [[ ! "$GITHUB_USER" =~ ^[A-Za-z0-9-]+$ ]]; then
         echo "ERROR: usuario GitHub no válido."
         exit 1
     fi
 
-    # Crear archivo temporal protegido
+    # Crear archivo temporal protegido.
 
     umask 077
 
@@ -174,14 +200,17 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     chown root:"$APP_GROUP" "$TEMP_CONFIG"
     chmod 0640 "$TEMP_CONFIG"
 
-    mv -f -- "$TEMP_CONFIG" "$CONFIG_FILE"
+    mv -fT -- "$TEMP_CONFIG" "$CONFIG_FILE"
+
     TEMP_CONFIG=""
 
     echo "Credenciales creadas correctamente."
 
 else
+
     echo
     echo "Configuración existente: se conserva."
+
 fi
 
 # ==========================================
@@ -251,16 +280,49 @@ chmod 0640 "$CONFIG_FILE"
 echo
 echo "Configurando clave oficial del relay Upterm..."
 
+# El archivo se almacena en CONFIG_DIR,
+# que pertenece a root y no es modificable
+# por el usuario del servicio.
+
+if [[ -L "$KNOWN_HOSTS" ]]; then
+    echo "ERROR: upterm_known_hosts no puede ser un enlace simbólico."
+    exit 1
+fi
+
+if [[ -e "$KNOWN_HOSTS" && ! -f "$KNOWN_HOSTS" ]]; then
+    echo "ERROR: upterm_known_hosts no es un archivo regular."
+    exit 1
+fi
+
+# Crear archivo temporal en el directorio protegido.
+
+TEMP_KNOWN_HOSTS="$(mktemp "${CONFIG_DIR}/.upterm_known_hosts.XXXXXX")"
+
+printf '%s\n' "$UPTERM_KNOWN_HOSTS" > "$TEMP_KNOWN_HOSTS"
+
+chown root:"$APP_GROUP" "$TEMP_KNOWN_HOSTS"
+chmod 0640 "$TEMP_KNOWN_HOSTS"
+
+# Reemplazo atómico del archivo de confianza.
+
+mv -fT -- "$TEMP_KNOWN_HOSTS" "$KNOWN_HOSTS"
+
+TEMP_KNOWN_HOSTS=""
+
+# ==========================================
+# CONFIGURAR DIRECTORIO SSH
+# ==========================================
+
+if [[ -L "$SSH_DIR" ]]; then
+    echo "ERROR: el directorio .ssh no puede ser un enlace simbólico."
+    exit 1
+fi
+
 install -d \
     -o "$APP_USER" \
     -g "$APP_GROUP" \
     -m 0700 \
     "$SSH_DIR"
-
-printf '%s\n' "$UPTERM_KNOWN_HOSTS" > "$KNOWN_HOSTS"
-
-chown "$APP_USER":"$APP_GROUP" "$KNOWN_HOSTS"
-chmod 0600 "$KNOWN_HOSTS"
 
 # ==========================================
 # PERMISOS FINALES
@@ -269,8 +331,17 @@ chmod 0600 "$KNOWN_HOSTS"
 chown root:"$APP_GROUP" "$CONFIG_DIR"
 chmod 0750 "$CONFIG_DIR"
 
+chown root:"$APP_GROUP" "$CONFIG_FILE"
+chmod 0640 "$CONFIG_FILE"
+
+chown root:"$APP_GROUP" "$KNOWN_HOSTS"
+chmod 0640 "$KNOWN_HOSTS"
+
 chown "$APP_USER":"$APP_GROUP" "$STATE_DIR"
 chmod 0750 "$STATE_DIR"
+
+chown "$APP_USER":"$APP_GROUP" "$SSH_DIR"
+chmod 0700 "$SSH_DIR"
 
 # ==========================================
 # RESULTADO
@@ -284,7 +355,8 @@ echo "=========================================="
 echo "Usuario: $APP_USER"
 echo "Grupo: $APP_GROUP"
 echo "Configuración: $CONFIG_FILE"
-echo "Claves verificadas: $KNOWN_HOSTS"
+echo "Claves de confianza: $KNOWN_HOSTS"
+echo "Directorio SSH: $SSH_DIR"
 
 echo
 echo "Permisos de credenciales:"
@@ -296,7 +368,7 @@ stat -c "%A %U:%G %n" "$KNOWN_HOSTS"
 
 echo
 echo "Huella oficial documentada:"
-echo "SHA256:9ajV8JqMe6jJE/s3TYjb/9xw7T0pfJ2+gADiBIJWDPE"
+echo "$EXPECTED_FINGERPRINT"
 
 echo
 echo "Configuración de seguridad terminada."
