@@ -15,13 +15,15 @@ CONFIG_FILE="${CONFIG_DIR}/bot.env"
 STATE_DIR="/var/lib/raspberry-telebot"
 SSH_DIR="${STATE_DIR}/.ssh"
 
-# Archivo de confianza SSH protegido por root.
 KNOWN_HOSTS="${CONFIG_DIR}/upterm_known_hosts"
 
 TEMP_CONFIG=""
 TEMP_KNOWN_HOSTS=""
 
-# Clave oficial publicada por el proyecto Upterm.
+# Cuentas GitHub autorizadas para Upterm.
+GITHUB_USER_1="OliverAmadeus"
+GITHUB_USER_2="KaworuSSSS"
+
 UPTERM_KNOWN_HOSTS='
 @cert-authority uptermd.upterm.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
 @cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4
@@ -34,8 +36,8 @@ EXPECTED_FINGERPRINT="SHA256:9ajV8JqMe6jJE/s3TYjb/9xw7T0pfJ2+gADiBIJWDPE"
 # ==========================================
 
 cleanup() {
-
-    unset BOT_TOKEN TELEGRAM_ID GITHUB_USER
+    unset BOT_TOKEN TELEGRAM_ID
+    unset EXISTING_TOKEN EXISTING_ID
 
     if [[ -n "$TEMP_CONFIG" && -f "$TEMP_CONFIG" ]]; then
         rm -f -- "$TEMP_CONFIG"
@@ -88,7 +90,6 @@ fi
 # ==========================================
 
 if ! id "$APP_USER" >/dev/null 2>&1; then
-
     useradd \
         --system \
         --gid "$APP_GROUP" \
@@ -96,7 +97,6 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
         --no-create-home \
         --shell /usr/sbin/nologin \
         "$APP_USER"
-
 fi
 
 USER_GROUP="$(id -gn "$APP_USER")"
@@ -110,11 +110,7 @@ fi
 # CREAR DIRECTORIOS
 # ==========================================
 
-install -d \
-    -o root \
-    -g "$APP_GROUP" \
-    -m 0750 \
-    "$CONFIG_DIR"
+install -d -o root -g "$APP_GROUP" -m 0750 "$CONFIG_DIR"
 
 install -d \
     -o "$APP_USER" \
@@ -123,7 +119,7 @@ install -d \
     "$STATE_DIR"
 
 # ==========================================
-# VALIDAR ARCHIVO DE CONFIGURACION
+# VALIDAR ARCHIVO EXISTENTE
 # ==========================================
 
 if [[ -L "$CONFIG_FILE" ]]; then
@@ -137,152 +133,126 @@ if [[ -e "$CONFIG_FILE" && ! -f "$CONFIG_FILE" ]]; then
 fi
 
 # ==========================================
-# CONFIGURAR CREDENCIALES
+# OBTENER CREDENCIALES
 # ==========================================
 
-if [[ ! -f "$CONFIG_FILE" ]]; then
+BOT_TOKEN=""
+TELEGRAM_ID=""
+
+if [[ -f "$CONFIG_FILE" ]]; then
+
+    echo
+    echo "Se encontró una configuración existente."
+    echo "Se conservarán las credenciales de Telegram."
+
+    if [[ ! -s "$CONFIG_FILE" ]]; then
+        echo "ERROR: bot.env está vacío."
+        exit 1
+    fi
+
+    # Validar token.
+    if [[ "$(grep -Ec '^TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+$' "$CONFIG_FILE")" -ne 1 ]]; then
+        echo "ERROR: token de Telegram incorrecto o duplicado."
+        exit 1
+    fi
+
+    # Validar Telegram ID.
+    if [[ "$(grep -Ec '^TELEGRAM_AUTHORIZED_USER_ID=[0-9]+$' "$CONFIG_FILE")" -ne 1 ]]; then
+        echo "ERROR: Telegram User ID incorrecto o duplicado."
+        exit 1
+    fi
+
+    # Validar servidor.
+    if [[ "$(grep -Ec '^UPTERM_SERVER=wss://uptermd\.upterm\.dev$' "$CONFIG_FILE")" -ne 1 ]]; then
+        echo "ERROR: servidor Upterm incorrecto o duplicado."
+        exit 1
+    fi
+
+    # Debe existir una cuenta autorizada principal.
+    if [[ "$(grep -Ec '^UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+$' "$CONFIG_FILE")" -ne 1 ]]; then
+        echo "ERROR: cuenta GitHub principal incorrecta o duplicada."
+        exit 1
+    fi
+
+    # La segunda cuenta es opcional en configuraciones antiguas.
+    if [[ "$(grep -Ec '^UPTERM_AUTHORIZED_USER_2=github:[A-Za-z0-9-]+$' "$CONFIG_FILE")" -gt 1 ]]; then
+        echo "ERROR: segunda cuenta GitHub duplicada."
+        exit 1
+    fi
+
+    # Rechazar variables y líneas adicionales.
+    if grep -Ev \
+        '^(TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+|TELEGRAM_AUTHORIZED_USER_ID=[0-9]+|UPTERM_SERVER=wss://uptermd\.upterm\.dev|UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+|UPTERM_AUTHORIZED_USER_2=github:[A-Za-z0-9-]+)$' \
+        "$CONFIG_FILE" >/dev/null; then
+
+        echo "ERROR: bot.env contiene líneas no permitidas."
+        exit 1
+    fi
+
+    EXISTING_TOKEN="$(sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$CONFIG_FILE")"
+    EXISTING_ID="$(sed -n 's/^TELEGRAM_AUTHORIZED_USER_ID=//p' "$CONFIG_FILE")"
+
+    BOT_TOKEN="$EXISTING_TOKEN"
+    TELEGRAM_ID="$EXISTING_ID"
+
+else
 
     echo
     echo "CONFIGURACION DE TELEGRAM"
     echo "------------------------------------------"
-
-    BOT_TOKEN=""
-    TELEGRAM_ID=""
-    GITHUB_USER=""
 
     read -r -s -p "Token del bot de Telegram: " BOT_TOKEN
     echo
 
     read -r -p "Tu Telegram User ID: " TELEGRAM_ID
 
-    echo
-    echo "CONFIGURACION DE UPT​ERM"
-    echo "------------------------------------------"
-
-    read -r -p "Usuario GitHub autorizado [KaworuSSSS]: " GITHUB_USER
-
-    GITHUB_USER="${GITHUB_USER:-KaworuSSSS}"
-
-    # Validar token.
-
-    if [[ ! "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
-        echo "ERROR: formato del token de Telegram no válido."
-        exit 1
-    fi
-
-    # Validar Telegram ID.
-
-    if [[ ! "$TELEGRAM_ID" =~ ^[0-9]+$ ]]; then
-        echo "ERROR: Telegram User ID no válido."
-        exit 1
-    fi
-
-    # Validar usuario GitHub.
-
-    if [[ ! "$GITHUB_USER" =~ ^[A-Za-z0-9-]+$ ]]; then
-        echo "ERROR: usuario GitHub no válido."
-        exit 1
-    fi
-
-    # Crear archivo temporal protegido.
-
-    umask 077
-
-    TEMP_CONFIG="$(mktemp "${CONFIG_DIR}/.bot.env.XXXXXX")"
-
-    {
-        printf 'TELEGRAM_BOT_TOKEN=%s\n' "$BOT_TOKEN"
-        printf 'TELEGRAM_AUTHORIZED_USER_ID=%s\n' "$TELEGRAM_ID"
-        printf 'UPTERM_SERVER=%s\n' "wss://uptermd.upterm.dev"
-        printf 'UPTERM_AUTHORIZED_USER=%s\n' "github:${GITHUB_USER}"
-    } > "$TEMP_CONFIG"
-
-    chown root:"$APP_GROUP" "$TEMP_CONFIG"
-    chmod 0640 "$TEMP_CONFIG"
-
-    mv -fT -- "$TEMP_CONFIG" "$CONFIG_FILE"
-
-    TEMP_CONFIG=""
-
-    echo "Credenciales creadas correctamente."
-
-else
-
-    echo
-    echo "Configuración existente: se conserva."
-
 fi
 
 # ==========================================
-# VALIDAR CONFIGURACION
+# VALIDAR CREDENCIALES
+# ==========================================
+
+if [[ ! "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+    echo "ERROR: formato del token de Telegram no válido."
+    exit 1
+fi
+
+if [[ ! "$TELEGRAM_ID" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: Telegram User ID no válido."
+    exit 1
+fi
+
+# ==========================================
+# CREAR CONFIGURACION CANONICA
 # ==========================================
 
 echo
-echo "Validando archivo de configuración..."
+echo "Configurando las dos cuentas GitHub autorizadas..."
 
-if [[ ! -s "$CONFIG_FILE" ]]; then
-    echo "ERROR: el archivo de configuración está vacío."
-    exit 1
-fi
+umask 077
 
-# Debe contener exactamente cuatro líneas.
+TEMP_CONFIG="$(mktemp "${CONFIG_DIR}/.bot.env.XXXXXX")"
 
-LINE_COUNT="$(wc -l < "$CONFIG_FILE")"
+{
+    printf 'TELEGRAM_BOT_TOKEN=%s\n' "$BOT_TOKEN"
+    printf 'TELEGRAM_AUTHORIZED_USER_ID=%s\n' "$TELEGRAM_ID"
+    printf 'UPTERM_SERVER=%s\n' "wss://uptermd.upterm.dev"
+    printf 'UPTERM_AUTHORIZED_USER=github:%s\n' "$GITHUB_USER_1"
+    printf 'UPTERM_AUTHORIZED_USER_2=github:%s\n' "$GITHUB_USER_2"
+} > "$TEMP_CONFIG"
 
-if [[ "$LINE_COUNT" -ne 4 ]]; then
-    echo "ERROR: bot.env debe contener exactamente cuatro líneas."
-    exit 1
-fi
+chown root:"$APP_GROUP" "$TEMP_CONFIG"
+chmod 0640 "$TEMP_CONFIG"
 
-# Validar que cada variable aparezca exactamente una vez.
-
-if [[ "$(grep -Ec '^TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+$' "$CONFIG_FILE")" -ne 1 ]]; then
-    echo "ERROR: token de Telegram incorrecto o duplicado."
-    exit 1
-fi
-
-if [[ "$(grep -Ec '^TELEGRAM_AUTHORIZED_USER_ID=[0-9]+$' "$CONFIG_FILE")" -ne 1 ]]; then
-    echo "ERROR: Telegram User ID incorrecto o duplicado."
-    exit 1
-fi
-
-if [[ "$(grep -Ec '^UPTERM_SERVER=wss://uptermd\.upterm\.dev$' "$CONFIG_FILE")" -ne 1 ]]; then
-    echo "ERROR: servidor Upterm incorrecto o duplicado."
-    exit 1
-fi
-
-if [[ "$(grep -Ec '^UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+$' "$CONFIG_FILE")" -ne 1 ]]; then
-    echo "ERROR: usuario GitHub incorrecto o duplicado."
-    exit 1
-fi
-
-# No permitir variables ni líneas adicionales.
-
-if grep -Ev \
-    '^(TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+|TELEGRAM_AUTHORIZED_USER_ID=[0-9]+|UPTERM_SERVER=wss://uptermd\.upterm\.dev|UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+)$' \
-    "$CONFIG_FILE" >/dev/null; then
-
-    echo "ERROR: bot.env contiene líneas no permitidas."
-    exit 1
-fi
-
-# ==========================================
-# PROTEGER CREDENCIALES
-# ==========================================
-
-chown root:"$APP_GROUP" "$CONFIG_FILE"
-chmod 0640 "$CONFIG_FILE"
+mv -fT -- "$TEMP_CONFIG" "$CONFIG_FILE"
+TEMP_CONFIG=""
 
 # ==========================================
 # CONFIGURAR CLAVE DEL RELAY
 # ==========================================
 
 echo
-echo "Configurando clave oficial del relay Upterm..."
-
-# El archivo se almacena en CONFIG_DIR,
-# que pertenece a root y no es modificable
-# por el usuario del servicio.
+echo "Configurando clave de confianza del relay Upterm..."
 
 if [[ -L "$KNOWN_HOSTS" ]]; then
     echo "ERROR: upterm_known_hosts no puede ser un enlace simbólico."
@@ -294,8 +264,6 @@ if [[ -e "$KNOWN_HOSTS" && ! -f "$KNOWN_HOSTS" ]]; then
     exit 1
 fi
 
-# Crear archivo temporal en el directorio protegido.
-
 TEMP_KNOWN_HOSTS="$(mktemp "${CONFIG_DIR}/.upterm_known_hosts.XXXXXX")"
 
 printf '%s\n' "$UPTERM_KNOWN_HOSTS" > "$TEMP_KNOWN_HOSTS"
@@ -303,10 +271,7 @@ printf '%s\n' "$UPTERM_KNOWN_HOSTS" > "$TEMP_KNOWN_HOSTS"
 chown root:"$APP_GROUP" "$TEMP_KNOWN_HOSTS"
 chmod 0640 "$TEMP_KNOWN_HOSTS"
 
-# Reemplazo atómico del archivo de confianza.
-
 mv -fT -- "$TEMP_KNOWN_HOSTS" "$KNOWN_HOSTS"
-
 TEMP_KNOWN_HOSTS=""
 
 # ==========================================
@@ -315,6 +280,11 @@ TEMP_KNOWN_HOSTS=""
 
 if [[ -L "$SSH_DIR" ]]; then
     echo "ERROR: el directorio .ssh no puede ser un enlace simbólico."
+    exit 1
+fi
+
+if [[ -e "$SSH_DIR" && ! -d "$SSH_DIR" ]]; then
+    echo "ERROR: .ssh no es un directorio."
     exit 1
 fi
 
@@ -352,11 +322,16 @@ echo "=========================================="
 echo " SEGURIDAD CONFIGURADA"
 echo "=========================================="
 
-echo "Usuario: $APP_USER"
+echo "Usuario del servicio: $APP_USER"
 echo "Grupo: $APP_GROUP"
 echo "Configuración: $CONFIG_FILE"
 echo "Claves de confianza: $KNOWN_HOSTS"
 echo "Directorio SSH: $SSH_DIR"
+
+echo
+echo "Cuentas GitHub autorizadas:"
+echo " - github:$GITHUB_USER_1"
+echo " - github:$GITHUB_USER_2"
 
 echo
 echo "Permisos de credenciales:"
