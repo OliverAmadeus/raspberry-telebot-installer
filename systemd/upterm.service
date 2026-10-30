@@ -4,6 +4,9 @@ Description=Raspberry Telebot - Upterm Remote Terminal
 Wants=network-online.target
 After=network-online.target
 
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 
@@ -20,11 +23,8 @@ EnvironmentFile=/etc/raspberry-telebot-installer/bot.env
 
 ExecStart=/opt/raspberry-telebot-installer/venv/bin/python /opt/raspberry-telebot-installer/bot/upterm.py
 
-Restart=always
+Restart=on-failure
 RestartSec=15
-
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 NoNewPrivileges=true
 PrivateTmp=true
