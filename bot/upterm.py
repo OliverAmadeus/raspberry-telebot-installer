@@ -1,5 +1,6 @@
 
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -10,17 +11,26 @@ from pathlib import Path
 # ==========================================
 
 UPTERM_SERVER = os.getenv(
-    "UPTERM_SERVER", ""
+    "UPTERM_SERVER",
+    ""
 ).strip()
 
 UPTERM_AUTHORIZED_USER = os.getenv(
-    "UPTERM_AUTHORIZED_USER", ""
+    "UPTERM_AUTHORIZED_USER",
+    ""
 ).strip()
 
-HOME_DIR = Path.home()
+KNOWN_HOSTS = Path(
+    "/etc/raspberry-telebot-installer/upterm_known_hosts"
+)
 
-SSH_DIR = HOME_DIR / ".ssh"
-KNOWN_HOSTS = SSH_DIR / "known_hosts"
+EXPECTED_HOST_MARKER = (
+    "@cert-authority uptermd.upterm.dev ssh-ed25519 "
+)
+
+EXPECTED_HOST_MARKER_443 = (
+    "@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 "
+)
 
 
 # ==========================================
@@ -37,14 +47,15 @@ def find_upterm():
     possible_paths = [
         Path("/usr/local/bin/upterm"),
         Path("/usr/bin/upterm"),
-        HOME_DIR / "go/bin/upterm",
+        Path.home() / "go/bin/upterm",
     ]
 
     for path in possible_paths:
+
         if path.is_file() and os.access(path, os.X_OK):
             return str(path)
 
-    raise FileNotFoundError(
+    raise RuntimeError(
         "No se encontró el ejecutable Upterm."
     )
 
@@ -55,53 +66,62 @@ def find_upterm():
 
 def validate_configuration():
 
+    # Validar servidor.
+
     if UPTERM_SERVER != "wss://uptermd.upterm.dev":
-        raise ValueError(
-            "El servidor Upterm no coincide con el relay autorizado."
+        raise RuntimeError(
+            "UPTERM_SERVER no coincide con el relay autorizado."
         )
 
-    if not UPTERM_AUTHORIZED_USER.startswith("github:"):
-        raise ValueError(
-            "La autorización debe tener formato github:usuario."
-        )
+    # Validar usuario GitHub.
 
-    username = UPTERM_AUTHORIZED_USER.split(":", 1)[1]
-
-    if not username:
-        raise ValueError(
-            "Falta el usuario GitHub autorizado."
-        )
-
-    if not all(
-        character.isalnum() or character == "-"
-        for character in username
+    if not re.fullmatch(
+        r"github:[A-Za-z0-9-]+",
+        UPTERM_AUTHORIZED_USER
     ):
-        raise ValueError(
-            "El usuario GitHub configurado no es válido."
+        raise RuntimeError(
+            "UPTERM_AUTHORIZED_USER no es válido."
         )
 
-    if not SSH_DIR.is_dir():
-        raise FileNotFoundError(
-            f"No existe el directorio SSH: {SSH_DIR}"
-        )
+    # Validar archivo de confianza.
 
     if not KNOWN_HOSTS.is_file():
-        raise FileNotFoundError(
-            f"No existe known_hosts: {KNOWN_HOSTS}"
+        raise RuntimeError(
+            f"No existe el archivo de confianza: {KNOWN_HOSTS}"
+        )
+
+    if KNOWN_HOSTS.is_symlink():
+        raise RuntimeError(
+            "El archivo known_hosts no puede ser un enlace simbólico."
         )
 
     if KNOWN_HOSTS.stat().st_size == 0:
-        raise ValueError(
+        raise RuntimeError(
             "El archivo known_hosts está vacío."
         )
 
-    known_hosts_content = KNOWN_HOSTS.read_text(
+    # Verificar las dos entradas esperadas.
+
+    content = KNOWN_HOSTS.read_text(
         encoding="utf-8"
     )
 
-    if "@cert-authority uptermd.upterm.dev ssh-ed25519" not in known_hosts_content:
-        raise ValueError(
-            "No se encontró la clave oficial del relay."
+    lines = content.splitlines()
+
+    if not any(
+        line.startswith(EXPECTED_HOST_MARKER)
+        for line in lines
+    ):
+        raise RuntimeError(
+            "Falta la clave de confianza del relay Upterm."
+        )
+
+    if not any(
+        line.startswith(EXPECTED_HOST_MARKER_443)
+        for line in lines
+    ):
+        raise RuntimeError(
+            "Falta la clave de confianza del relay Upterm en el puerto 443."
         )
 
 
@@ -111,59 +131,79 @@ def validate_configuration():
 
 def main():
 
-    validate_configuration()
+    try:
 
-    executable = find_upterm()
+        validate_configuration()
 
-    command = [
-        executable,
-        "host",
-        "--server",
-        UPTERM_SERVER,
-        "--authorized-user",
-        UPTERM_AUTHORIZED_USER,
-        "--known-hosts",
-        str(KNOWN_HOSTS),
-        "--accept",
-        "--no-sftp",
-        "--hide-client-ip",
-        "--",
-        "/bin/bash",
-        "-l",
-    ]
+        executable = find_upterm()
 
-    print("======================================")
-    print(" RASPBERRY TELEBOT - UPT​ERM")
-    print("======================================")
+        command = [
+            executable,
+            "host",
 
-    print(f"Ejecutable: {executable}")
-    print(f"Servidor: {UPTERM_SERVER}")
-    print(f"Usuario autorizado: {UPTERM_AUTHORIZED_USER}")
-    print(f"Claves verificadas: {KNOWN_HOSTS}")
-    print("SFTP/SCP: desactivado")
-    print("IP de invitados: oculta")
-    print("Acceso interactivo: habilitado")
-    print("Modo: primer plano")
-    print("Iniciando terminal remota...", flush=True)
+            "--server",
+            UPTERM_SERVER,
 
-    os.execv(executable, command)
+            "--authorized-user",
+            UPTERM_AUTHORIZED_USER,
+
+            "--known-hosts",
+            str(KNOWN_HOSTS),
+
+            "--accept",
+
+            "--no-sftp",
+
+            "--hide-client-ip",
+
+            "--",
+
+            "/bin/bash",
+            "-l",
+        ]
+
+        print(
+            "Iniciando servidor Upterm...",
+            flush=True
+        )
+
+        print(
+            f"Relay: {UPTERM_SERVER}",
+            flush=True
+        )
+
+        print(
+            f"Usuario autorizado: {UPTERM_AUTHORIZED_USER}",
+            flush=True
+        )
+
+        print(
+            "Transferencia SFTP: desactivada",
+            flush=True
+        )
+
+        # Reemplazar el proceso Python por Upterm.
+        # systemd supervisará directamente Upterm.
+
+        os.execv(
+            executable,
+            command
+        )
+
+    except Exception as error:
+
+        print(
+            f"ERROR iniciando Upterm: {error}",
+            file=sys.stderr,
+            flush=True
+        )
+
+        sys.exit(1)
 
 
 # ==========================================
-# EJECUCION
+# PUNTO DE ENTRADA
 # ==========================================
 
 if __name__ == "__main__":
-
-    try:
-        main()
-
-    except KeyboardInterrupt:
-        print("\nUpterm detenido.")
-
-    except Exception as error:
-        print(
-            f"ERROR UPT​ERM: {error}",
-            file=sys.stderr
-        )
-        sys.exit(1)
+    main()
