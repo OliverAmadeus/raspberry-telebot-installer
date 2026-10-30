@@ -10,14 +10,30 @@ from pathlib import Path
 # CONFIGURACION
 # ==========================================
 
-HOME_DIR = str(Path.home())
+HOME_DIR = "/var/lib/raspberry-telebot"
 
 COMMAND_TIMEOUT = 120
 MAX_OUTPUT_SIZE = 1024 * 1024  # 1 MiB por canal
 READ_CHUNK_SIZE = 65536
 
-# Directorio independiente por usuario Telegram
+# Directorio independiente por usuario Telegram.
 working_directories = {}
+
+
+# ==========================================
+# ENTORNO CONTROLADO
+# ==========================================
+
+def get_command_environment():
+    return {
+        "HOME": HOME_DIR,
+        "USER": "raspberry-telebot",
+        "LOGNAME": "raspberry-telebot",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TERM": "xterm-256color",
+    }
 
 
 # ==========================================
@@ -33,6 +49,7 @@ def get_working_directory(user_id):
 # ==========================================
 
 def change_directory(user_id, command):
+
     try:
         arguments = shlex.split(command)
 
@@ -70,6 +87,12 @@ def change_directory(user_id, command):
                 f"{destination}"
             )
 
+        if not os.access(destination, os.X_OK | os.R_OK):
+            return (
+                "No tienes permisos para acceder al directorio:\n"
+                f"{destination}"
+            )
+
         working_directories[user_id] = destination
 
         return (
@@ -86,9 +109,6 @@ def change_directory(user_id, command):
 # ==========================================
 
 async def terminate_process_group(process):
-
-    if process.returncode is not None:
-        return
 
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -164,8 +184,9 @@ async def execute_command(user_id, command):
     Ejecuta comandos Linux mediante Bash.
 
     Características:
-    - Comandos arbitrarios.
-    - Directorio persistente por usuario.
+    - Comandos arbitrarios dentro de los permisos del servicio.
+    - Directorio persistente por usuario durante la ejecución del bot.
+    - Entorno controlado.
     - Tiempo máximo de ejecución.
     - Lectura limitada de stdout y stderr.
     - Terminación del grupo de procesos.
@@ -199,6 +220,9 @@ async def execute_command(user_id, command):
         current_dir = HOME_DIR
         working_directories[user_id] = HOME_DIR
 
+    if not os.access(current_dir, os.X_OK | os.R_OK):
+        return "No tienes permisos para acceder al directorio actual."
+
     # ======================================
     # CREAR PROCESO
     # ======================================
@@ -210,6 +234,7 @@ async def execute_command(user_id, command):
             "-lc",
             command,
             cwd=current_dir,
+            env=get_command_environment(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True
