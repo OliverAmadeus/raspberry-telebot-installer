@@ -74,6 +74,7 @@ echo "Destino: $APP_DIR"
 # ==========================================
 
 REQUIRED_FILES=(
+    "README.md"
     "requirements.txt"
     "bot/bot.py"
     "bot/terminal.py"
@@ -195,7 +196,23 @@ install -d -m 0755 "$APP_DIR"
 
 if [[ "$(realpath "$SOURCE_DIR")" != "$(realpath "$APP_DIR")" ]]; then
 
-    cp -a "$SOURCE_DIR/." "$APP_DIR/"
+    ITEMS_TO_COPY=(
+        "README.md"
+        "install.sh"
+        "requirements.txt"
+        "bot"
+        "systemd"
+        "config"
+        "scripts"
+    )
+
+    for item in "${ITEMS_TO_COPY[@]}"; do
+
+        if [[ -e "$SOURCE_DIR/$item" ]]; then
+            cp -a "$SOURCE_DIR/$item" "$APP_DIR/"
+        fi
+
+    done
 
 fi
 
@@ -305,11 +322,7 @@ for service in "${SERVICES[@]}"; do
 
     fi
 
-    # Dar tiempo al proceso para iniciar.
-
     sleep 3
-
-    # Verificar estado.
 
     if ! systemctl is-active --quiet "$service"; then
 
@@ -322,8 +335,6 @@ for service in "${SERVICES[@]}"; do
         exit 1
 
     fi
-
-    # Verificar que exista un proceso principal.
 
     MAIN_PID="$(
         systemctl show \
@@ -377,5 +388,5 @@ echo "sudo journalctl -u telegram-bot.service -f"
 echo "sudo journalctl -u upterm.service -f"
 
 echo
-echo "Ambos servicios están activos y habilitados"
+echo "Ambos servicios están habilitados"
 echo "para iniciar automáticamente con la Raspberry Pi."
