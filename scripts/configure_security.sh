@@ -57,6 +57,16 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
         "$APP_USER"
 fi
 
+# Comprobar que el usuario existente utiliza
+# el grupo principal esperado.
+
+USER_GROUP="$(id -gn "$APP_USER")"
+
+if [[ "$USER_GROUP" != "$APP_GROUP" ]]; then
+    echo "ERROR: el usuario tiene un grupo principal inesperado."
+    exit 1
+fi
+
 # ==========================================
 # CREAR DIRECTORIOS
 # ==========================================
@@ -72,6 +82,18 @@ install -d \
     -g "$APP_GROUP" \
     -m 0750 \
     "$STATE_DIR"
+
+# ==========================================
+# LIMPIAR TOKEN EN MEMORIA AL TERMINAR
+# ==========================================
+
+BOT_TOKEN=""
+
+cleanup() {
+    unset BOT_TOKEN
+}
+
+trap cleanup EXIT
 
 # ==========================================
 # CONFIGURAR CREDENCIALES
@@ -96,20 +118,28 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
     GITHUB_USER="${GITHUB_USER:-KaworuSSSS}"
 
-    if [[ -z "$BOT_TOKEN" ]]; then
-        echo "ERROR: token vacío."
+    # Validar token de Telegram
+
+    if [[ ! "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+        echo "ERROR: formato del token de Telegram no válido."
         exit 1
     fi
+
+    # Validar Telegram ID
 
     if [[ ! "$TELEGRAM_ID" =~ ^[0-9]+$ ]]; then
         echo "ERROR: Telegram User ID no válido."
         exit 1
     fi
 
+    # Validar usuario GitHub
+
     if [[ ! "$GITHUB_USER" =~ ^[A-Za-z0-9-]+$ ]]; then
         echo "ERROR: usuario GitHub no válido."
         exit 1
     fi
+
+    # Crear archivo protegido
 
     umask 027
 
@@ -120,15 +150,49 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
         printf 'UPTERM_AUTHORIZED_USER=%s\n' "github:${GITHUB_USER}"
     } > "$CONFIG_FILE"
 
-    chown root:"$APP_GROUP" "$CONFIG_FILE"
-    chmod 0640 "$CONFIG_FILE"
-
-    unset BOT_TOKEN
-
     echo "Credenciales creadas."
+
 else
+    echo
     echo "Configuración existente: se conserva."
 fi
+
+# ==========================================
+# VALIDAR CONFIGURACION EXISTENTE
+# ==========================================
+
+echo
+echo "Validando archivo de configuración..."
+
+if [[ ! -s "$CONFIG_FILE" ]]; then
+    echo "ERROR: el archivo de configuración está vacío."
+    exit 1
+fi
+
+if ! grep -Eq '^TELEGRAM_BOT_TOKEN=[0-9]+:[A-Za-z0-9_-]+$' "$CONFIG_FILE"; then
+    echo "ERROR: falta un token de Telegram válido."
+    exit 1
+fi
+
+if ! grep -Eq '^TELEGRAM_AUTHORIZED_USER_ID=[0-9]+$' "$CONFIG_FILE"; then
+    echo "ERROR: falta un Telegram User ID válido."
+    exit 1
+fi
+
+if ! grep -Fxq 'UPTERM_SERVER=wss://uptermd.upterm.dev' "$CONFIG_FILE"; then
+    echo "ERROR: servidor Upterm incorrecto."
+    exit 1
+fi
+
+if ! grep -Eq '^UPTERM_AUTHORIZED_USER=github:[A-Za-z0-9-]+$' "$CONFIG_FILE"; then
+    echo "ERROR: usuario GitHub de Upterm no válido."
+    exit 1
+fi
+
+# Reparar siempre los permisos del archivo.
+
+chown root:"$APP_GROUP" "$CONFIG_FILE"
+chmod 0640 "$CONFIG_FILE"
 
 # ==========================================
 # INSTALAR CLAVE DEL RELAY
@@ -158,12 +222,17 @@ chmod 0750 "$CONFIG_DIR"
 chown "$APP_USER":"$APP_GROUP" "$STATE_DIR"
 chmod 0750 "$STATE_DIR"
 
+# ==========================================
+# RESULTADO
+# ==========================================
+
 echo
 echo "=========================================="
 echo " SEGURIDAD CONFIGURADA"
 echo "=========================================="
 
 echo "Usuario: $APP_USER"
+echo "Grupo: $APP_GROUP"
 echo "Configuración: $CONFIG_FILE"
 echo "Claves verificadas: $KNOWN_HOSTS"
 
