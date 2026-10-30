@@ -23,6 +23,9 @@ EnvironmentFile=/etc/raspberry-telebot-installer/bot.env
 
 ExecStart=/opt/raspberry-telebot-installer/venv/bin/python /opt/raspberry-telebot-installer/bot/upterm.py
 
+StandardOutput=file:/var/lib/raspberry-telebot/upterm.log
+StandardError=journal
+
 Restart=on-failure
 RestartSec=15
 
