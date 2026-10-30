@@ -377,10 +377,15 @@ VERSION_OUTPUT="$("$UPTERM_INSTALL" version)"
 
 echo "$VERSION_OUTPUT"
 
-if [[ "$VERSION_OUTPUT" != *"$UPTERM_VERSION"* ]]; then
+EXPECTED_VERSION="${UPTERM_VERSION#v}"
+
+if [[ "$VERSION_OUTPUT" != *"$EXPECTED_VERSION"* ]]; then
     echo "ERROR: la versión instalada no coincide."
+    echo "Esperada: $EXPECTED_VERSION"
     exit 1
 fi
+
+echo "Versión instalada verificada correctamente."
 
 # ==========================================
 # RESULTADO
