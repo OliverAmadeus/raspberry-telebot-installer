@@ -10,15 +10,14 @@ from telegram.ext import (
 )
 
 from terminal import execute_command, get_working_directory
+from upterm import start_upterm, stop_upterm, status_upterm
 
 
 # ==========================================
 # CONFIGURACION
 # ==========================================
 
-BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN", ""
-).strip()
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
 AUTHORIZED_USER_ID = os.getenv(
     "TELEGRAM_AUTHORIZED_USER_ID", ""
@@ -26,12 +25,12 @@ AUTHORIZED_USER_ID = os.getenv(
 
 
 # ==========================================
-# REGISTRO DE EVENTOS
+# REGISTRO
 # ==========================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,10 +41,6 @@ logger = logging.getLogger(__name__)
 # ==========================================
 
 def authorized(update: Update) -> bool:
-    """
-    Permite únicamente al usuario configurado
-    y desde una conversación privada.
-    """
 
     user = update.effective_user
     chat = update.effective_chat
@@ -56,13 +51,10 @@ def authorized(update: Update) -> bool:
     if not AUTHORIZED_USER_ID.isdigit():
         return False
 
-    if user.id != int(AUTHORIZED_USER_ID):
-        return False
-
-    if chat.type != "private":
-        return False
-
-    return True
+    return (
+        user.id == int(AUTHORIZED_USER_ID)
+        and chat.type == "private"
+    )
 
 
 # ==========================================
@@ -70,10 +62,6 @@ def authorized(update: Update) -> bool:
 # ==========================================
 
 async def send_long_message(update: Update, text: str):
-    """
-    Divide respuestas respetando el límite
-    de longitud UTF-16 de Telegram.
-    """
 
     if not update.message:
         return
@@ -93,7 +81,6 @@ async def send_long_message(update: Update, text: str):
 
         if current_length + char_length > max_length:
             await update.message.reply_text(chunk)
-
             chunk = ""
             current_length = 0
 
@@ -105,12 +92,12 @@ async def send_long_message(update: Update, text: str):
 
 
 # ==========================================
-# COMANDO START
+# START
 # ==========================================
 
 async def start_handler(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not authorized(update):
@@ -118,49 +105,55 @@ async def start_handler(
 
     await update.message.reply_text(
         "Raspberry Telebot está activo.\n\n"
-        "Comandos disponibles:\n"
-        "/terminal comando - Ejecutar comando Linux\n"
-        "/pwd - Mostrar directorio actual\n"
+        "COMANDOS:\n"
+        "/terminal comando - Ejecutar Linux\n"
+        "/pwd - Directorio actual\n"
+        "/upterm iniciar - Iniciar terminal remota\n"
+        "/upterm estado - Consultar sesión\n"
+        "/upterm detener - Cerrar sesión\n"
         "/ayuda - Mostrar ayuda"
     )
 
 
 # ==========================================
-# COMANDO AYUDA
+# AYUDA
 # ==========================================
 
 async def help_handler(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not authorized(update):
         return
 
     await update.message.reply_text(
-        "TERMINAL REMOTA RASPBERRY\n\n"
-        "Ejemplos:\n"
+        "RASPBERRY TELEBOT\n\n"
+        "TERMINAL LINUX:\n"
         "/terminal ls -la\n"
         "/terminal uname -a\n"
         "/terminal df -h\n"
-        "/terminal systemctl status ssh\n"
         "/terminal cd /home\n"
         "/pwd\n\n"
-        "Los comandos se ejecutan con los permisos "
-        "del usuario Linux que ejecuta el bot.\n\n"
-        "IMPORTANTE:\n"
-        "El bot permite ejecutar comandos Linux arbitrarios. "
-        "Utilízalo únicamente desde tu chat privado autorizado."
+        "UPTERM:\n"
+        "/upterm iniciar\n"
+        "/upterm estado\n"
+        "/upterm detener\n\n"
+        "Upterm permite acceso interactivo remoto.\n"
+        "El identificador de conexión debe mantenerse "
+        "privado: cualquiera que lo obtenga puede entrar "
+        "mientras la sesión esté activa.\n\n"
+        "SFTP/SCP está desactivado."
     )
 
 
 # ==========================================
-# COMANDO PWD
+# PWD
 # ==========================================
 
 async def pwd_handler(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not authorized(update):
@@ -168,39 +161,30 @@ async def pwd_handler(
 
     user_id = str(update.effective_user.id)
 
-    directory = get_working_directory(user_id)
-
-    await update.message.reply_text(directory)
+    await update.message.reply_text(
+        get_working_directory(user_id)
+    )
 
 
 # ==========================================
-# COMANDO TERMINAL
+# TERMINAL LINUX
 # ==========================================
 
 async def terminal_handler(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    if not authorized(update):
-        return
-
-    if not update.message:
+    if not authorized(update) or not update.message:
         return
 
     message = update.message.text or ""
-
     parts = message.split(maxsplit=1)
 
-    command = (
-        parts[1].strip()
-        if len(parts) > 1
-        else ""
-    )
+    command = parts[1].strip() if len(parts) > 1 else ""
 
     if not command:
         await update.message.reply_text(
-            "Indica un comando.\n"
             "Ejemplo: /terminal ls -la"
         )
         return
@@ -212,25 +196,107 @@ async def terminal_handler(
     )
 
     try:
-
-        result = await execute_command(
-            user_id,
-            command
-        )
-
-        await send_long_message(
-            update,
-            result
-        )
+        result = await execute_command(user_id, command)
+        await send_long_message(update, result)
 
     except Exception:
-
-        logger.exception(
-            "Error ejecutando comando"
-        )
-
+        logger.exception("Error ejecutando comando")
         await update.message.reply_text(
             "Se produjo un error al ejecutar el comando."
+        )
+
+
+# ==========================================
+# CONTROL UPT​ERM
+# ==========================================
+
+async def upterm_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not authorized(update) or not update.message:
+        return
+
+    action = (
+        context.args[0].lower()
+        if context.args
+        else ""
+    )
+
+    if action == "iniciar":
+
+        await update.message.reply_text(
+            "Iniciando sesión Upterm..."
+        )
+
+        try:
+            session = await start_upterm()
+
+            message = (
+                "UPTERM ACTIVO\n\n"
+                f"Sesión: {session['name']}\n\n"
+            )
+
+            if session.get("joinCommand"):
+                message += (
+                    "Comando de conexión:\n"
+                    f"{session['joinCommand']}\n\n"
+                )
+
+            if session.get("sshCommand"):
+                message += (
+                    "Comando SSH:\n"
+                    f"{session['sshCommand']}\n\n"
+                )
+
+            message += (
+                "Mantén estos datos privados. "
+                "Cualquier persona que los obtenga "
+                "podrá entrar mientras la sesión esté activa.\n"
+                "SFTP/SCP: desactivado."
+            )
+
+            await send_long_message(update, message)
+
+        except Exception:
+            logger.exception("Error iniciando Upterm")
+            await update.message.reply_text(
+                "No se pudo iniciar Upterm. "
+                "Revisa el registro del servicio."
+            )
+
+    elif action == "estado":
+
+        try:
+            result = await status_upterm()
+            await update.message.reply_text(result)
+
+        except Exception:
+            logger.exception("Error consultando Upterm")
+            await update.message.reply_text(
+                "No se pudo consultar el estado de Upterm."
+            )
+
+    elif action == "detener":
+
+        try:
+            result = await stop_upterm()
+            await update.message.reply_text(result)
+
+        except Exception:
+            logger.exception("Error deteniendo Upterm")
+            await update.message.reply_text(
+                "No se pudo detener Upterm."
+            )
+
+    else:
+
+        await update.message.reply_text(
+            "Uso:\n"
+            "/upterm iniciar\n"
+            "/upterm estado\n"
+            "/upterm detener"
         )
 
 
@@ -242,7 +308,7 @@ def main():
 
     if not BOT_TOKEN:
         raise RuntimeError(
-            "Falta TELEGRAM_BOT_TOKEN en la configuración."
+            "Falta TELEGRAM_BOT_TOKEN."
         )
 
     if not AUTHORIZED_USER_ID.isdigit():
@@ -272,16 +338,14 @@ def main():
         CommandHandler("terminal", terminal_handler)
     )
 
-    logger.info(
-        "Raspberry Telebot iniciado."
+    application.add_handler(
+        CommandHandler("upterm", upterm_handler)
     )
+
+    logger.info("Raspberry Telebot iniciado.")
 
     application.run_polling()
 
-
-# ==========================================
-# EJECUCION
-# ==========================================
 
 if __name__ == "__main__":
     main()
