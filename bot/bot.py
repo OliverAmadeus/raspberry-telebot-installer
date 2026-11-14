@@ -60,8 +60,11 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 def authorized(update: Update) -> bool:
     """
-    Permite únicamente al usuario autorizado
-    desde un chat privado de Telegram.
+    Permite a todos los integrantes utilizar el bot
+    en grupos y supergrupos.
+
+    En chats privados conserva la autorización
+    del usuario configurado.
     """
 
     user = update.effective_user
@@ -70,13 +73,22 @@ def authorized(update: Update) -> bool:
     if user is None or chat is None:
         return False
 
-    if AUTHORIZED_USER_ID_INT is None:
-        return False
+    # Acceso para todos los integrantes de grupos.
+    if chat.type in ("group", "supergroup"):
+        return True
 
-    return (
-        user.id == AUTHORIZED_USER_ID_INT
-        and chat.type == "private"
-    )
+    # En privado conserva la autorización original.
+    if chat.type == "private":
+        return (
+            AUTHORIZED_USER_ID_INT is not None
+            and user.id == AUTHORIZED_USER_ID_INT
+        )
+
+    return False
+
+
+
+    
 
 
 # ==========================================
@@ -227,15 +239,9 @@ async def terminal_handler(
 
     if not valid_message(update):
         return
+    
 
-    message = update.message.text or ""
-    parts = message.split(maxsplit=1)
-
-    command = (
-        parts[1].strip()
-        if len(parts) > 1
-        else ""
-    )
+    command = " ".join(context.args).strip()
 
     if not command:
         await update.message.reply_text(
