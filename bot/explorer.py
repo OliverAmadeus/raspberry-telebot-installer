@@ -19,10 +19,35 @@ from file_manager import (
 
 logger = logging.getLogger(__name__)
 
-START_DIRECTORY = Path.home().resolve()
+START_DIRECTORY = Path("/home/rasp4").resolve()
 PAGE_SIZE = 10
 
 explorer_sessions = {}
+
+
+def is_authorized(update):
+    from bot_config import AUTHORIZED_USER_ID_INT
+    user = update.effective_user
+    chat = update.effective_chat
+
+    return (
+        user is not None
+        and chat is not None
+        and chat.type == "private"
+        and user.id == AUTHORIZED_USER_ID_INT
+    )
+
+
+def safe_directory(path):
+    path = Path(path).resolve(strict=True)
+
+    if not path.is_dir():
+        raise ValueError("No es una carpeta.")
+
+    if not path.is_relative_to(START_DIRECTORY):
+        raise ValueError("Acceso fuera del directorio permitido.")
+
+    return path
 
 
 def build_keyboard(user_id, directory, page=0):
@@ -38,19 +63,19 @@ def build_keyboard(user_id, directory, page=0):
 
     keyboard = []
 
-    for kind, item in visible:
+    for index, (kind, item) in enumerate(visible):
         if kind == "folder":
             keyboard.append([
                 InlineKeyboardButton(
-                    f"📁 {item.name[:40]}",
-                    callback_data=f"exp:open:{item.name}",
+                    f"📁 {item.name[:35]}",
+                    callback_data=f"exp:open:{index}",
                 )
             ])
         else:
             keyboard.append([
                 InlineKeyboardButton(
-                    f"📄 {item.name[:40]}",
-                    callback_data=f"exp:select:{item.name}",
+                    f"📄 {item.name[:35]}",
+                    callback_data=f"exp:select:{index}",
                 )
             ])
 
@@ -80,7 +105,9 @@ def build_keyboard(user_id, directory, page=0):
         InlineKeyboardButton("⬆️ Atrás", callback_data="exp:back"),
     ])
 
-    if explorer_sessions[user_id].get("selected"):
+    selected = explorer_sessions[user_id].get("selected")
+
+    if selected:
         keyboard.append([
             InlineKeyboardButton(
                 "📥 Descargar TXT",
@@ -95,66 +122,79 @@ def build_keyboard(user_id, directory, page=0):
     return InlineKeyboardMarkup(keyboard), len(entries)
 
 
+def get_entries(directory):
+    folders, files = list_directory(directory)
+    return (
+        [("folder", item) for item in folders]
+        + [("file", item) for item in files]
+    )
+
+
 async def render_explorer(query, user_id):
     session = explorer_sessions[user_id]
-    directory = Path(session["directory"])
+    directory = safe_directory(session["directory"])
 
-    try:
-        markup, total = build_keyboard(
-            user_id,
-            directory,
-            session.get("page", 0),
-        )
+    markup, total = build_keyboard(
+        user_id,
+        directory,
+        session.get("page", 0),
+    )
 
-        message = (
-            "📂 EXPLORADOR DE ARCHIVOS\n\n"
-            f"📍 {directory}\n\n"
-            f"Elementos: {total}"
-        )
+    message = (
+        "📂 EXPLORADOR DE ARCHIVOS\n\n"
+        f"📍 {directory}\n\n"
+        f"Elementos: {total}"
+    )
 
-        if session.get("selected"):
-            message += f"\n\n📌 Seleccionado: {session['selected']}"
+    if session.get("selected"):
+        message += f"\n\n📌 Seleccionado: {session['selected']}"
 
-        await query.edit_message_text(
-            message,
-            reply_markup=markup,
-        )
-
-    except Exception:
-        logger.exception("Error mostrando explorador")
-        await query.edit_message_text(
-            "No se pudo acceder a esta carpeta."
-        )
+    await query.edit_message_text(
+        message,
+        reply_markup=markup,
+    )
 
 
 async def explorer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    if not user or not update.message:
+    if not is_authorized(update):
         return
 
-    explorer_sessions[user.id] = {
+    explorer_sessions[update.effective_user.id] = {
         "directory": str(START_DIRECTORY),
         "history": [],
         "page": 0,
         "selected": None,
     }
 
-    markup, total = build_keyboard(user.id, START_DIRECTORY)
+    try:
+        markup, total = build_keyboard(
+            update.effective_user.id,
+            START_DIRECTORY,
+        )
 
-    await update.message.reply_text(
-        "📂 EXPLORADOR DE ARCHIVOS\n\n"
-        f"📍 {START_DIRECTORY}\n\n"
-        f"Elementos: {total}",
-        reply_markup=markup,
-    )
+        await update.message.reply_text(
+            "📂 EXPLORADOR DE ARCHIVOS\n\n"
+            f"📍 {START_DIRECTORY}\n\n"
+            f"Elementos: {total}",
+            reply_markup=markup,
+        )
+
+    except Exception:
+        logger.exception("Error iniciando explorador")
+        await update.message.reply_text(
+            "No se pudo abrir el directorio inicial."
+        )
 
 
 async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = update.effective_user
 
-    if not query or not user:
+    if not is_authorized(update):
+        await query.answer(
+            "No tienes autorización.",
+            show_alert=True,
+        )
         return
 
     await query.answer()
@@ -167,8 +207,8 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    directory = safe_directory(session["directory"])
     action = query.data.split(":", 2)
-    directory = Path(session["directory"])
 
     if action[1] == "home":
         session["directory"] = str(START_DIRECTORY)
@@ -187,73 +227,83 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["page"] += 1 if action[2] == "next" else -1
         session["page"] = max(0, session["page"])
 
-    elif action[1] == "open":
-        target = directory / action[2]
+    elif action[1] in ("open", "select"):
+        index = int(action[2])
+        entries = get_entries(directory)
 
-        if target.is_symlink() or not target.is_dir():
-            await query.answer("Carpeta no válida.", show_alert=True)
+        start = session.get("page", 0) * PAGE_SIZE
+        entry_index = start + index
+
+        if entry_index >= len(entries):
+            await query.answer("Elemento no válido.", show_alert=True)
             return
 
-        session["history"].append(str(directory))
-        session["directory"] = str(target.resolve())
-        session["page"] = 0
-        session["selected"] = None
+        kind, item = entries[entry_index]
 
-    elif action[1] == "select":
-        target = directory / action[2]
+        if action[1] == "open":
+            if kind != "folder":
+                return
 
-        try:
-            target = get_downloadable_file(target)
-            session["selected"] = target.name
-        except Exception as error:
-            await query.answer(str(error), show_alert=True)
-            return
+            target = safe_directory(item)
+
+            session["history"].append(str(directory))
+            session["directory"] = str(target)
+            session["page"] = 0
+            session["selected"] = None
+
+        else:
+            if kind != "file":
+                return
+
+            try:
+                target = get_downloadable_file(item)
+
+                if target.suffix.lower() != ".txt":
+                    await query.answer(
+                        "Solo se permiten archivos TXT.",
+                        show_alert=True,
+                    )
+                    return
+
+                session["selected"] = target.name
+
+            except Exception as error:
+                await query.answer(str(error), show_alert=True)
+                return
 
     elif action[1] == "download":
         name = session.get("selected")
 
         if not name:
-            await query.answer("Selecciona un archivo primero.", show_alert=True)
             return
 
-        try:
-            target = get_downloadable_file(directory / name)
+        target = get_downloadable_file(directory / name)
 
-            with target.open("rb") as document:
-                await context.bot.send_document(
-                    chat_id=query.message.chat_id,
-                    document=document,
-                    filename=target.name,
-                )
+        if target.suffix.lower() != ".txt":
+            await query.answer("Solo se permiten TXT.", show_alert=True)
+            return
 
-        except Exception:
-            logger.exception("Error descargando archivo")
-            await query.message.reply_text(
-                "No se pudo descargar el archivo."
+        with target.open("rb") as document:
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=document,
+                filename=target.name,
             )
 
     elif action[1] == "view":
         name = session.get("selected")
 
         if not name:
-            await query.answer("Selecciona un archivo primero.", show_alert=True)
             return
 
-        try:
-            content = read_text_file(directory / name)
+        content = read_text_file(directory / name)
 
-            if len(content) > 3500:
-                content = content[:3500] + "\n\n[Contenido recortado]"
+        if len(content) > 3500:
+            content = content[:3500] + "\n\n[Contenido recortado]"
 
-            await query.message.reply_text(
-                f"📄 {name}\n\n{content}"
-            )
-
-        except Exception:
-            logger.exception("Error leyendo archivo")
-            await query.message.reply_text(
-                "No se pudo leer el archivo."
-            )
+        await query.message.reply_text(
+            f"📄 {name}\n\n{content}"
+        )
 
     await render_explorer(query, user.id)
 
@@ -270,8 +320,3 @@ def register_explorer(application):
         )
     )
 PY
-
-chown rasp4:rasp4 bot/explorer.py
-chmod 644 bot/explorer.py
-
-python3 -m py_compile bot/explorer.py bot/file_manager.py
