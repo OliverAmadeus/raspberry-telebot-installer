@@ -1,4 +1,3 @@
-
 import logging
 import os
 
@@ -11,6 +10,7 @@ from telegram.ext import (
 
 from terminal import execute_command, get_working_directory
 from upterm import start_upterm, stop_upterm, status_upterm
+from explorer import register_explorer
 
 
 # ==========================================
@@ -465,6 +465,12 @@ def main():
             "upterm",
             upterm_handler,
         )
+    )
+
+    # EXPLORADOR DE ARCHIVOS
+    register_explorer(
+        application,
+        AUTHORIZED_USER_ID_INT,
     )
 
     # --------------------------------------
