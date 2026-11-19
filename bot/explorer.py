@@ -1,31 +1,27 @@
-cd /workspaces/raspberry-telebot-installer
+cd /opt/raspberry-telebot-installer
 
 cat > bot/explorer.py <<'PY'
 import logging
 from pathlib import Path
 
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler,
     CommandHandler,
 )
 
-from file_manager import list_directory, get_downloadable_file, read_text_file
+from file_manager import (
+    list_directory,
+    get_downloadable_file,
+    read_text_file,
+)
 
 logger = logging.getLogger(__name__)
 
-# Directorio inicial
 START_DIRECTORY = Path.home().resolve()
-
-# Límite de archivos mostrados por página
 PAGE_SIZE = 10
 
-# Estado del explorador por usuario
 explorer_sessions = {}
 
 
@@ -46,14 +42,14 @@ def build_keyboard(user_id, directory, page=0):
         if kind == "folder":
             keyboard.append([
                 InlineKeyboardButton(
-                    f"📁 {item.name[:45]}",
+                    f"📁 {item.name[:40]}",
                     callback_data=f"exp:open:{item.name}",
                 )
             ])
         else:
             keyboard.append([
                 InlineKeyboardButton(
-                    f"📄 {item.name[:45]}",
+                    f"📄 {item.name[:40]}",
                     callback_data=f"exp:select:{item.name}",
                 )
             ])
@@ -62,12 +58,18 @@ def build_keyboard(user_id, directory, page=0):
 
     if page > 0:
         navigation.append(
-            InlineKeyboardButton("⬅️ Anterior", callback_data="exp:page:prev")
+            InlineKeyboardButton(
+                "⬅️ Anterior",
+                callback_data="exp:page:prev",
+            )
         )
 
     if start + PAGE_SIZE < len(entries):
         navigation.append(
-            InlineKeyboardButton("Siguiente ➡️", callback_data="exp:page:next")
+            InlineKeyboardButton(
+                "Siguiente ➡️",
+                callback_data="exp:page:next",
+            )
         )
 
     if navigation:
@@ -78,13 +80,10 @@ def build_keyboard(user_id, directory, page=0):
         InlineKeyboardButton("⬆️ Atrás", callback_data="exp:back"),
     ])
 
-    session = explorer_sessions[user_id]
-    selected = session.get("selected")
-
-    if selected:
+    if explorer_sessions[user_id].get("selected"):
         keyboard.append([
             InlineKeyboardButton(
-                "📥 Descargar archivo",
+                "📥 Descargar TXT",
                 callback_data="exp:download",
             ),
             InlineKeyboardButton(
@@ -107,15 +106,14 @@ async def render_explorer(query, user_id):
             session.get("page", 0),
         )
 
-        selected = session.get("selected")
         message = (
-            f"📂 EXPLORADOR DE ARCHIVOS\n\n"
+            "📂 EXPLORADOR DE ARCHIVOS\n\n"
             f"📍 {directory}\n\n"
-            f"Elementos: {total}\n"
+            f"Elementos: {total}"
         )
 
-        if selected:
-            message += f"\n📌 Seleccionado: {selected}"
+        if session.get("selected"):
+            message += f"\n\n📌 Seleccionado: {session['selected']}"
 
         await query.edit_message_text(
             message,
@@ -142,13 +140,10 @@ async def explorer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "selected": None,
     }
 
-    markup, total = build_keyboard(
-        user.id,
-        START_DIRECTORY,
-    )
+    markup, total = build_keyboard(user.id, START_DIRECTORY)
 
     await update.message.reply_text(
-        f"📂 EXPLORADOR DE ARCHIVOS\n\n"
+        "📂 EXPLORADOR DE ARCHIVOS\n\n"
         f"📍 {START_DIRECTORY}\n\n"
         f"Elementos: {total}",
         reply_markup=markup,
@@ -184,6 +179,7 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action[1] == "back":
         if session["history"]:
             session["directory"] = session["history"].pop()
+
         session["page"] = 0
         session["selected"] = None
 
@@ -192,8 +188,7 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["page"] = max(0, session["page"])
 
     elif action[1] == "open":
-        name = action[2]
-        target = directory / name
+        target = directory / action[2]
 
         if target.is_symlink() or not target.is_dir():
             await query.answer("Carpeta no válida.", show_alert=True)
@@ -205,8 +200,7 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["selected"] = None
 
     elif action[1] == "select":
-        name = action[2]
-        target = directory / name
+        target = directory / action[2]
 
         try:
             target = get_downloadable_file(target)
@@ -234,7 +228,9 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception:
             logger.exception("Error descargando archivo")
-            await query.message.reply_text("No se pudo descargar el archivo.")
+            await query.message.reply_text(
+                "No se pudo descargar el archivo."
+            )
 
     elif action[1] == "view":
         name = session.get("selected")
@@ -255,7 +251,9 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception:
             logger.exception("Error leyendo archivo")
-            await query.message.reply_text("No se pudo leer el archivo.")
+            await query.message.reply_text(
+                "No se pudo leer el archivo."
+            )
 
     await render_explorer(query, user.id)
 
@@ -273,4 +271,7 @@ def register_explorer(application):
     )
 PY
 
-python -m py_compile bot/explorer.py
+chown rasp4:rasp4 bot/explorer.py
+chmod 644 bot/explorer.py
+
+python3 -m py_compile bot/explorer.py bot/file_manager.py
