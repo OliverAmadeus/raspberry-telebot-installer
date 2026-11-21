@@ -1,6 +1,3 @@
-cd /opt/raspberry-telebot-installer
-
-cat > bot/explorer.py <<'PY'
 import logging
 from pathlib import Path
 
@@ -25,17 +22,11 @@ PAGE_SIZE = 10
 explorer_sessions = {}
 
 
-def is_authorized(update):
-    from bot_config import AUTHORIZED_USER_ID_INT
+def is_authorized(update, context):
     user = update.effective_user
     chat = update.effective_chat
 
-    return (
-        user is not None
-        and chat is not None
-        and chat.type == "private"
-        and user.id == AUTHORIZED_USER_ID_INT
-    )
+    return user is not None and chat is not None
 
 
 def safe_directory(path):
@@ -156,7 +147,7 @@ async def render_explorer(query, user_id):
 
 
 async def explorer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update):
+    if not is_authorized(update, context):
         return
 
     explorer_sessions[update.effective_user.id] = {
@@ -190,7 +181,7 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = update.effective_user
 
-    if not is_authorized(update):
+    if not is_authorized(update, context):
         await query.answer(
             "No tienes autorización.",
             show_alert=True,
@@ -308,7 +299,8 @@ async def explorer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await render_explorer(query, user.id)
 
 
-def register_explorer(application):
+def register_explorer(application, authorized_user_id):
+    application.bot_data["explorer_authorized_user_id"] = authorized_user_id
     application.add_handler(
         CommandHandler("archivos", explorer_command)
     )
@@ -319,4 +311,3 @@ def register_explorer(application):
             pattern=r"^exp:",
         )
     )
-PY
