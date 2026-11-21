@@ -1,6 +1,3 @@
-cd /opt/raspberry-telebot-installer
-
-cat > bot/file_manager.py <<'PY'
 from pathlib import Path
 
 ALLOWED_EXTENSIONS = {
@@ -62,9 +59,3 @@ def read_text_file(file_path):
         encoding="utf-8",
         errors="replace"
     )
-PY
-
-chown rasp4:rasp4 bot/file_manager.py
-chmod 644 bot/file_manager.py
-
-python3 -m py_compile bot/file_manager.py
